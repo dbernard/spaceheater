@@ -1,0 +1,712 @@
+#!/usr/bin/env bash
+#
+# spaceheater: Pre-create GitHub Codespaces for faster access
+#
+# Usage:
+#   spaceheater create <count>    Create N pre-warmed codespaces
+#   spaceheater list              List all codespaces with status
+#   spaceheater start [name]      Start a stopped codespace (or pick one)
+#   spaceheater stop [name]       Stop a running codespace
+#   spaceheater clean [days]      Delete codespaces older than N days (default: 7)
+#   spaceheater delete <name>     Delete a specific codespace
+#   spaceheater config            Show current configuration
+#   spaceheater help              Show this help
+#   spaceheater version           Show version information
+
+set -euo pipefail
+
+VERSION="1.0.0"
+
+# Cache for repository ID to avoid repeated API calls
+CACHED_REPO_ID=""
+
+# Get repository ID with caching
+get_repo_id() {
+  if [ -z "$CACHED_REPO_ID" ]; then
+    CACHED_REPO_ID=$(gh api "/repos/$REPO" --jq .id 2>/dev/null)
+    if [ -z "$CACHED_REPO_ID" ]; then
+      error "Failed to get repository ID for $REPO"
+    fi
+    debug "Cached repository ID: $CACHED_REPO_ID"
+  fi
+  echo "$CACHED_REPO_ID"
+}
+
+# Validate machine type against GitHub's allowed values
+validate_machine_type() {
+  local machine="$1"
+  local valid_types="basicLinux32gb basicLinux standardLinux standardLinux32gb premiumLinux premiumLinux32gb largePremiumLinux"
+
+  if [[ ! " $valid_types " =~ " $machine " ]]; then
+    warn "Warning: '$machine' may not be a valid machine type"
+    warn "Valid types: basicLinux32gb, standardLinux, premiumLinux, largePremiumLinux, etc."
+    read -p "Continue anyway? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      exit 1
+    fi
+  fi
+}
+
+# Auto-detect repository from current directory
+detect_repo() {
+  # First check environment variable
+  if [ -n "${SPACEHEATER_REPO:-}" ]; then
+    echo "$SPACEHEATER_REPO"
+    return 0
+  fi
+
+  # Try to detect from current git repository
+  if git rev-parse --git-dir &>/dev/null 2>&1; then
+    local repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")"
+    if [ -n "$repo" ]; then
+      echo "$repo"
+      return 0
+    fi
+  fi
+
+  # No repo found
+  return 1
+}
+
+# Detect default branch for the repository
+detect_default_branch() {
+  if [ -n "${SPACEHEATER_BRANCH:-}" ]; then
+    echo "$SPACEHEATER_BRANCH"
+    return 0
+  fi
+
+  # Try to get default branch from GitHub API
+  local default_branch="$(gh api "/repos/$REPO" --jq .default_branch 2>/dev/null || echo "")"
+  if [ -n "$default_branch" ]; then
+    echo "$default_branch"
+    return 0
+  fi
+
+  # Fallback to common defaults
+  echo "main"
+}
+
+# Initialize repo configuration (called when needed, not at startup)
+init_repo_config() {
+  if [ -z "${REPO:-}" ]; then
+    REPO=$(detect_repo) || {
+      error "Unable to detect repository.\n\nPlease set SPACEHEATER_REPO environment variable:\n  export SPACEHEATER_REPO=owner/repo\n\nOr run this command from within a git repository."
+    }
+  fi
+
+  if [ -z "${BRANCH:-}" ]; then
+    BRANCH=$(detect_default_branch)
+  fi
+
+  debug "Repository: $REPO, Branch: $BRANCH"
+}
+
+# Configuration (only set for help command, others will call init_repo_config)
+REPO="${REPO:-}"
+BRANCH="${BRANCH:-}"
+
+# Optional overrides - only pass to GitHub if explicitly set by user
+MACHINE="${SPACEHEATER_MACHINE:-}"
+RETENTION="${SPACEHEATER_RETENTION:-}"
+IDLE_TIMEOUT="${SPACEHEATER_IDLE_TIMEOUT:-}"
+DEVCONTAINER_PATH="${SPACEHEATER_DEVCONTAINER_PATH:-}"
+DISPLAY_NAME="${SPACEHEATER_DISPLAY_NAME:-}"
+LOCATION="${SPACEHEATER_LOCATION:-}"
+
+# Debug mode
+DEBUG="${SPACEHEATER_DEBUG:-false}"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+error() {
+  echo -e "${RED}Error: $*${NC}" >&2
+  exit 1
+}
+
+info() {
+  echo -e "${BLUE}$*${NC}"
+}
+
+success() {
+  echo -e "${GREEN}$*${NC}"
+}
+
+warn() {
+  echo -e "${YELLOW}$*${NC}"
+}
+
+debug() {
+  if [ "$DEBUG" = "true" ]; then
+    echo -e "${BLUE}[DEBUG]${NC} $*" >&2
+  fi
+}
+
+check_dependencies() {
+  # Check for GitHub CLI
+  if ! command -v gh &>/dev/null; then
+    error "GitHub CLI (gh) is required. Install from: https://cli.github.com"
+  fi
+
+  # Check for Python 3
+  if ! command -v python3 &>/dev/null; then
+    error "Python 3 is required for date calculations. Install from: https://python.org"
+  fi
+
+  # Check for git
+  if ! command -v git &>/dev/null; then
+    error "Git is required for repository detection"
+  fi
+
+  # Check GitHub authentication
+  if ! gh auth status &>/dev/null; then
+    error "Not authenticated with GitHub. Run: gh auth login"
+  fi
+}
+
+cmd_create() {
+  init_repo_config
+  local count="${1:-1}"
+
+  if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -lt 1 ]; then
+    error "Count must be a positive integer"
+  fi
+
+  # Cap at 3 codespaces per invocation
+  if [ "$count" -gt 3 ]; then
+    warn "Limiting to 3 codespaces per invocation (requested: $count)"
+    count=3
+  fi
+
+  info "Creating $count codespace(s) for $REPO (branch: $BRANCH)..."
+
+  # Show what configuration will be used
+  if [ -n "$MACHINE" ]; then
+    info "  Machine type: $MACHINE (user-specified)"
+    validate_machine_type "$MACHINE"
+  else
+    info "  Machine type: <from devcontainer hostRequirements or GitHub default>"
+  fi
+
+  if [ -n "$RETENTION" ]; then
+    info "  Retention: $RETENTION (user-specified)"
+  fi
+
+  if [ -n "$IDLE_TIMEOUT" ]; then
+    info "  Idle timeout: $IDLE_TIMEOUT (user-specified)"
+  fi
+
+  if [ -n "$DEVCONTAINER_PATH" ]; then
+    info "  Devcontainer: $DEVCONTAINER_PATH (user-specified)"
+  fi
+
+  if [ -n "$LOCATION" ]; then
+    info "  Region: $LOCATION (user-specified)"
+  fi
+
+  echo
+
+  local created=0
+  local failed=0
+
+  for i in $(seq 1 "$count"); do
+    info "[$i/$count] Creating codespace..."
+
+    debug "Creating codespace with: repo=$REPO branch=$BRANCH machine=${MACHINE:-<default>}"
+
+    # Build args array with only explicitly set values
+    local create_args=(
+      --repo "$REPO"
+      --branch "$BRANCH"
+      --default-permissions
+    )
+
+    # Add optional configurations ONLY if user explicitly set them
+    if [ -n "$MACHINE" ]; then
+      create_args+=(--machine "$MACHINE")
+    fi
+
+    if [ -n "$RETENTION" ]; then
+      create_args+=(--retention-period "$RETENTION")
+    fi
+
+    if [ -n "$IDLE_TIMEOUT" ]; then
+      create_args+=(--idle-timeout "$IDLE_TIMEOUT")
+    fi
+
+    if [ -n "$DEVCONTAINER_PATH" ]; then
+      create_args+=(--devcontainer-path "$DEVCONTAINER_PATH")
+    fi
+
+    if [ -n "$LOCATION" ]; then
+      create_args+=(--location "$LOCATION")
+    fi
+
+    if [ -n "$DISPLAY_NAME" ]; then
+      # Append counter for uniqueness
+      create_args+=(--display-name "${DISPLAY_NAME}-${i}")
+    fi
+
+    # Capture the output which contains the codespace name
+    local output="$(gh codespace create "${create_args[@]}" 2>&1)"
+
+    # Extract codespace name from output (last line is the codespace name)
+    local codespace_name=$(echo "$output" | tail -1 | grep -E '^[a-z0-9]+-[a-z0-9]+-[a-z0-9-]+$' || echo "")
+
+    if [ -n "$codespace_name" ]; then
+      success "  ✓ Created: $codespace_name"
+      created=$((created + 1))
+    else
+      warn "  ✗ Failed to create codespace"
+      echo "  Output: $output"
+      failed=$((failed + 1))
+    fi
+
+    # Rate limit protection
+    if [ "$i" -lt "$count" ]; then
+      sleep 2
+    fi
+  done
+
+  echo
+  success "Created $created codespace(s)"
+  if [ "$failed" -gt 0 ]; then
+    warn "Failed: $failed"
+  fi
+
+  info "\nCodespaces will fully build in the background (~5-10 minutes)"
+  info "They'll auto-stop after idle timeout and be ready for instant start"
+  info "\nRun 'spaceheater list' to see your codespaces"
+  info "Run 'spaceheater start' to connect to one when ready"
+}
+
+cmd_list() {
+  init_repo_config
+  info "Fetching codespaces for $REPO...\n"
+
+  gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+    --jq '.codespaces | sort_by(.created_at) | reverse | .[] |
+      "\(.state)\t\(.display_name // .name)\t\(.git_status.ref // "unknown")\t\(.git_status.has_uncommitted_changes // false)\t\(.git_status.has_unpushed_changes // false)\t\(.git_status.ahead // 0)\t\(.git_status.behind // 0)\t\(.name)\t\(.created_at)"' |
+  while IFS=$'\t' read -r state display_name branch has_uncommitted has_unpushed ahead behind name created_at; do
+    local color=""
+    local status_icon=""
+
+    case "$state" in
+      Available)
+        color="$GREEN"
+        status_icon="✓"
+        ;;
+      Shutdown)
+        color="$YELLOW"
+        status_icon="○"
+        ;;
+      Starting|Provisioning)
+        color="$BLUE"
+        status_icon="↻"
+        ;;
+      *)
+        color="$NC"
+        status_icon="●"
+        ;;
+    esac
+
+    # Determine git status indicator
+    local git_indicator=""
+    if [ "$has_uncommitted" = "true" ] || [ "$has_unpushed" = "true" ] || [ "$ahead" -gt 0 ]; then
+      git_indicator="${RED}●${NC}"  # Dirty (has changes)
+    elif [ "$behind" -gt 0 ]; then
+      git_indicator="${YELLOW}⤓${NC}"  # Behind remote
+    else
+      git_indicator="${GREEN}✔${NC}"  # Clean
+    fi
+
+    # Build git status details
+    local git_details=""
+    if [ "$has_uncommitted" = "true" ]; then
+      git_details="${git_details}uncommitted"
+    fi
+    if [ "$has_unpushed" = "true" ] || [ "$ahead" -gt 0 ]; then
+      if [ -n "$git_details" ]; then git_details="${git_details}, "; fi
+      git_details="${git_details}${ahead}↑"
+    fi
+    if [ "$behind" -gt 0 ]; then
+      if [ -n "$git_details" ]; then git_details="${git_details}, "; fi
+      git_details="${git_details}${behind}↓"
+    fi
+    if [ -z "$git_details" ]; then
+      git_details="clean"
+    fi
+
+    local age=$(python3 -c "
+from datetime import datetime, timezone
+created = datetime.fromisoformat('$created_at'.replace('Z', '+00:00'))
+now = datetime.now(timezone.utc)
+delta = now - created
+days = delta.days
+hours = delta.seconds // 3600
+if days > 0:
+    print(f'{days}d {hours}h ago')
+else:
+    print(f'{hours}h ago')
+" 2>/dev/null || echo "")
+
+    echo -e "${color}${status_icon} ${state}${NC}\t${git_indicator}\t${display_name}\t${branch}\t[${git_details}]\t(${age})\t${name}"
+  done | column -t -s $'\t'
+
+  echo
+  info "States: ✓=Available (running/building) ○=Shutdown (built & ready) ↻=Starting ●=Other"
+  info "Git: ${GREEN}✔${NC}=Clean ${RED}●${NC}=Has changes ${YELLOW}⤓${NC}=Behind remote"
+}
+
+cmd_start() {
+  init_repo_config
+  local codespace_name="$1"
+
+  if [ -z "$codespace_name" ]; then
+    # Pick a clean, shutdown codespace first, then any shutdown, then available
+    info "Finding a ready codespace (preferring clean)..."
+
+    # First try: Clean shutdown codespaces
+    codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+      --jq '.codespaces | map(select(.state == "Shutdown" and
+        .git_status.has_uncommitted_changes == false and
+        .git_status.has_unpushed_changes == false and
+        .git_status.ahead == 0)) |
+        sort_by(.created_at) | reverse | .[0].name // empty')
+
+    if [ -z "$codespace_name" ]; then
+      # Second try: Any shutdown codespace
+      codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+        --jq '.codespaces | map(select(.state == "Shutdown")) | sort_by(.created_at) | reverse | .[0].name // empty')
+
+      if [ -n "$codespace_name" ]; then
+        warn "No clean codespaces found, using one with uncommitted changes"
+      fi
+    fi
+
+    if [ -z "$codespace_name" ]; then
+      # Third try: Clean available codespaces
+      codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+        --jq '.codespaces | map(select(.state == "Available" and
+          .git_status.has_uncommitted_changes == false and
+          .git_status.has_unpushed_changes == false and
+          .git_status.ahead == 0)) |
+          sort_by(.created_at) | reverse | .[0].name // empty')
+
+      if [ -z "$codespace_name" ]; then
+        # Last try: Any available codespace
+        codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+          --jq '.codespaces | map(select(.state == "Available")) | sort_by(.created_at) | reverse | .[0].name // empty')
+      fi
+
+      if [ -n "$codespace_name" ]; then
+        warn "No fully built codespaces found, using one that's still running/building"
+      else
+        error "No codespaces found. Run 'spaceheater create 1' to create one."
+      fi
+    fi
+  fi
+
+  debug "Selected codespace: $codespace_name"
+  local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)"
+  info "Starting codespace: ${display_name:-$codespace_name}..."
+
+  # Start the codespace and connect
+  gh codespace code -c "$codespace_name"
+}
+
+cmd_stop() {
+  init_repo_config
+  local codespace_name="${1:-}"
+
+  if [ -z "$codespace_name" ]; then
+    info "Finding running codespace to stop..."
+
+    # Get the most recently used running codespace
+    codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+      --jq '.codespaces | map(select(.state == "Available")) |
+             sort_by(.last_used_at // .created_at) | reverse | .[0].name // empty')
+
+    if [ -z "$codespace_name" ]; then
+      error "No running codespaces found"
+    fi
+  fi
+
+  local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName 2>/dev/null)"
+  info "Stopping codespace: ${display_name:-$codespace_name}..."
+
+  if gh codespace stop -c "$codespace_name"; then
+    success "Stopped successfully!"
+  else
+    error "Failed to stop codespace"
+  fi
+}
+
+cmd_clean() {
+  init_repo_config
+  local days="${1:-7}"
+
+  if ! [[ "$days" =~ ^[0-9]+$ ]]; then
+    error "Days must be a positive integer"
+  fi
+
+  info "Finding codespaces older than $days days in $REPO..."
+
+  local cutoff_date=$(python3 -c "
+from datetime import datetime, timedelta, timezone
+cutoff = datetime.now(timezone.utc) - timedelta(days=$days)
+print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
+")
+
+  local to_delete=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+    --jq --arg cutoff "$cutoff_date" '
+      .codespaces |
+      map(select(.created_at < $cutoff)) |
+      .[] | "\(.name)\t\(.display_name // .name)\t\(.created_at)"')
+
+  if [ -z "$to_delete" ]; then
+    success "No codespaces older than $days days found."
+    return 0
+  fi
+
+  echo "$to_delete" | while IFS=$'\t' read -r name display_name created_at; do
+    echo -e "  - $display_name (created: $created_at)"
+  done
+
+  echo
+  read -p "Delete these codespaces? [y/N] " -n 1 -r
+  echo
+
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    info "Cancelled."
+    return 0
+  fi
+
+  echo "$to_delete" | while IFS=$'\t' read -r name display_name created_at; do
+    info "Deleting: $display_name"
+    if gh codespace delete -c "$name" --force; then
+      success "  ✓ Deleted"
+    else
+      warn "  ✗ Failed to delete"
+    fi
+  done
+
+  success "Cleanup complete!"
+}
+
+cmd_delete() {
+  init_repo_config
+  local codespace_name="$1"
+
+  if [ -z "$codespace_name" ]; then
+    error "Usage: spaceheater delete <codespace-name>"
+  fi
+
+  info "Deleting codespace: $codespace_name"
+  gh codespace delete -c "$codespace_name" --force
+  success "Deleted!"
+}
+
+cmd_config() {
+  cat << EOF
+Spaceheater Configuration
+=========================
+Repository Settings:
+  SPACEHEATER_REPO:              ${SPACEHEATER_REPO:-<auto-detect from git>}
+  SPACEHEATER_BRANCH:            ${SPACEHEATER_BRANCH:-<auto-detect from repo>}
+
+Codespace Overrides (optional):
+  SPACEHEATER_MACHINE:           ${MACHINE:-<use devcontainer or GitHub default>}
+  SPACEHEATER_RETENTION:         ${RETENTION:-<use GitHub default>}
+  SPACEHEATER_IDLE_TIMEOUT:      ${IDLE_TIMEOUT:-<use GitHub/org default>}
+  SPACEHEATER_DEVCONTAINER_PATH: ${DEVCONTAINER_PATH:-<auto-detect>}
+  SPACEHEATER_LOCATION:          ${LOCATION:-<auto-detect closest region>}
+  SPACEHEATER_DISPLAY_NAME:      ${DISPLAY_NAME:-<GitHub-generated>}
+
+Debug Settings:
+  SPACEHEATER_DEBUG:             ${DEBUG:-false}
+
+Current Detection:
+EOF
+
+  # Try to detect and show current values
+  if detect_repo &>/dev/null; then
+    local detected_repo=$(detect_repo)
+    echo "  Detected Repository:           $detected_repo"
+    echo "  Detected Branch:               $(detect_default_branch)"
+
+    # Try to show devcontainer info if we're in the repo
+    if [ -f ".devcontainer/devcontainer.json" ]; then
+      echo "  Devcontainer:                  .devcontainer/devcontainer.json (found)"
+
+      # Try to extract hostRequirements if jq is available
+      if command -v jq &>/dev/null; then
+        local cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
+        local memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
+        if [ -n "$cpus" ] || [ -n "$memory" ]; then
+          echo "  Devcontainer Requirements:     ${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}"
+        fi
+      fi
+    elif [ -f ".devcontainer.json" ]; then
+      echo "  Devcontainer:                  .devcontainer.json (found)"
+    else
+      echo "  Devcontainer:                  <none - will use GitHub default image>"
+    fi
+  else
+    echo "  Detected Repository:           <none - not in a git repo>"
+  fi
+
+  echo
+  echo "Configuration Philosophy:"
+  echo "  spaceheater respects your repository's devcontainer and GitHub's defaults."
+  echo "  Only set environment variables when you need to override these defaults."
+  echo
+  echo "To override a setting:"
+  echo "  export SPACEHEATER_MACHINE=premiumLinux"
+  echo "  export SPACEHEATER_RETENTION=168h"
+}
+
+cmd_version() {
+  cat << EOF
+spaceheater version $VERSION
+
+A tool for pre-creating fully-built GitHub Codespaces that are ready for instant startup.
+
+Project: https://github.com/dbernard/spaceheater
+License: MIT
+EOF
+}
+
+cmd_help() {
+  cat << EOF
+spaceheater: Pre-create GitHub Codespaces for faster access
+
+USAGE:
+  spaceheater create <count>    Create codespaces (max 3 per invocation)
+  spaceheater list              List all codespaces with status
+  spaceheater start [name]      Start a stopped codespace (or pick one)
+  spaceheater stop [name]       Stop a running codespace
+  spaceheater clean [days]      Delete codespaces older than N days (default: 7)
+  spaceheater delete <name>     Delete a specific codespace
+  spaceheater config            Show current configuration
+  spaceheater version           Show version information
+  spaceheater help              Show this help
+
+ENVIRONMENT VARIABLES (all optional):
+  SPACEHEATER_REPO              Repository (owner/repo format)
+                                Default: Auto-detect from current git repo
+
+  SPACEHEATER_BRANCH            Branch to use
+                                Default: Auto-detect repository default branch
+
+  SPACEHEATER_MACHINE           Machine type override
+                                Default: Respect devcontainer hostRequirements or GitHub default
+                                Options: basicLinux, standardLinux, premiumLinux, largePremiumLinux
+
+  SPACEHEATER_RETENTION         Retention period override
+                                Default: GitHub default (typically 30 days)
+                                Format: 168h, 720h, etc.
+
+  SPACEHEATER_IDLE_TIMEOUT      Idle timeout override
+                                Default: GitHub/org default (typically 30 minutes)
+                                Format: 30m, 1h, etc.
+
+  SPACEHEATER_DEVCONTAINER_PATH Path to devcontainer.json
+                                Default: Auto-detect (.devcontainer/devcontainer.json)
+
+  SPACEHEATER_LOCATION          Azure region override
+                                Default: Closest to your location
+                                Options: EastUs, WestEurope, SoutheastAsia, etc.
+
+  SPACEHEATER_DISPLAY_NAME      Custom display name prefix (counter will be appended)
+                                Default: GitHub-generated name
+
+EXAMPLES:
+  # Create 3 codespaces with repository defaults
+  spaceheater create 3
+
+  # Override machine type for heavier workload
+  SPACEHEATER_MACHINE=premiumLinux spaceheater create 2
+
+  # Use specific devcontainer configuration
+  SPACEHEATER_DEVCONTAINER_PATH=.devcontainer/python/devcontainer.json spaceheater create 1
+
+  # Create in specific region for lower latency
+  SPACEHEATER_LOCATION=WestEurope spaceheater create 1
+
+  # Combine multiple overrides
+  SPACEHEATER_MACHINE=standardLinux SPACEHEATER_RETENTION=168h spaceheater create 1
+
+  # List all codespaces
+  spaceheater list
+
+  # Start the best available codespace (prefers clean, shutdown)
+  spaceheater start
+
+  # Start a specific codespace
+  spaceheater start fictional-orbit-gw56j9gqvcpgrr
+
+  # Stop the most recently used codespace
+  spaceheater stop
+
+  # Delete codespaces older than 14 days
+  spaceheater clean 14
+
+HOW IT WORKS:
+  Creates codespaces that build completely in the background (~5-10 minutes),
+  then auto-stop after idle timeout. Once stopped, they cost nothing but can
+  start in ~30 seconds with everything already built. Maximum 3 codespaces
+  per invocation to prevent overuse.
+
+  By default, spaceheater respects your repository's devcontainer configuration
+  and GitHub's defaults. Use environment variables only when you need to override.
+
+EOF
+}
+
+# Main
+main() {
+  check_dependencies
+
+  local cmd="${1:-help}"
+  shift || true
+
+  case "$cmd" in
+    create)
+      cmd_create "$@"
+      ;;
+    list|ls)
+      cmd_list "$@"
+      ;;
+    start)
+      cmd_start "${1:-}"
+      ;;
+    stop)
+      cmd_stop "${1:-}"
+      ;;
+    clean)
+      cmd_clean "$@"
+      ;;
+    delete|rm)
+      cmd_delete "$@"
+      ;;
+    config)
+      cmd_config
+      ;;
+    version|--version|-v)
+      cmd_version
+      ;;
+    help|--help|-h)
+      cmd_help
+      ;;
+    *)
+      error "Unknown command: $cmd\nRun 'spaceheater help' for usage."
+      ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,43 @@
+#compdef spaceheater
+
+# zsh completion for spaceheater
+
+_spaceheater() {
+  local -a commands
+  commands=(
+    'create:Create pre-warmed codespaces (max 3)'
+    'list:List all codespaces with status'
+    'start:Start a stopped codespace'
+    'stop:Stop a running codespace'
+    'clean:Delete codespaces older than N days'
+    'delete:Delete a specific codespace'
+    'config:Show current configuration'
+    'version:Show version information'
+    'help:Show help message'
+  )
+
+  _arguments -C \
+    '1: :->command' \
+    '*:: :->args'
+
+  case $state in
+    command)
+      _describe 'command' commands
+      ;;
+    args)
+      case $words[1] in
+        create)
+          _arguments '1:count:(1 2 3)'
+          ;;
+        clean)
+          _arguments '1:days:(7 14 30 60 90)'
+          ;;
+        start|stop|delete)
+          # Could list codespace names here in the future
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_spaceheater "$@"

@@ -1,0 +1,403 @@
+# spaceheater 🔥
+
+> Pre-create fully-built GitHub Codespaces that are ready for instant startup
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/dbernard/spaceheater/releases)
+
+Tired of waiting 5-10 minutes for Codespaces to build? `spaceheater` creates pre-warmed codespaces in the background that start in ~30 seconds when you need them.
+
+## ✨ Features
+
+- 🚀 **Instant startup** - Pre-built codespaces start in ~30 seconds instead of 5-10 minutes
+- 🤖 **Background building** - Let codespaces build while you work on something else
+- 💰 **Cost-efficient** - Stopped codespaces cost nothing (only minimal storage)
+- 🎯 **Smart selection** - Automatically picks the best available codespace
+- 🧹 **Easy cleanup** - Bulk delete old codespaces by age
+- ⚙️ **Configurable** - Respects devcontainer settings and GitHub defaults
+- 🎨 **Git-aware** - Shows uncommitted changes and sync status at a glance
+
+## 🚀 Quick Start
+
+```bash
+# Install
+git clone https://github.com/dbernard/spaceheater.git
+cd spaceheater
+./install.sh
+
+# Create 3 pre-warmed codespaces
+spaceheater create 3
+
+# List your codespaces with status
+spaceheater list
+
+# Start the best available one
+spaceheater start
+```
+
+## 📦 Installation
+
+### Recommended: Automated Installer
+
+```bash
+git clone https://github.com/dbernard/spaceheater.git
+cd spaceheater
+./install.sh
+```
+
+The installer will:
+- ✅ Check all prerequisites (`gh`, `python3`, `git`)
+- 📁 Install to `~/.local/bin` or `/usr/local/bin`
+- 🔧 Set up shell completions (bash/zsh)
+- ✓ Verify the installation
+
+**Alternative with Make:**
+```bash
+make install
+```
+
+### Manual Installation
+
+If you prefer manual installation:
+
+```bash
+# Clone and add to PATH
+git clone https://github.com/dbernard/spaceheater.git
+echo 'export PATH="$HOME/spaceheater:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+# Or create a symlink
+sudo ln -s "$PWD/spaceheater/spaceheater" /usr/local/bin/spaceheater
+```
+
+### Prerequisites
+
+- [GitHub CLI (`gh`)](https://cli.github.com/) - installed and authenticated
+- Python 3 - for date calculations
+- Git - for repository detection
+- Bash 4.0+ - for the script itself
+- GitHub Codespaces access on your repository
+
+**Setup GitHub CLI:**
+```bash
+# Install (macOS)
+brew install gh
+
+# Install (Linux)
+# See https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+
+# Authenticate
+gh auth login
+```
+
+### Verify Installation
+
+```bash
+spaceheater version
+spaceheater help
+```
+
+### Uninstall
+
+```bash
+cd /path/to/spaceheater
+./uninstall.sh
+```
+
+Or:
+```bash
+make uninstall
+```
+
+## 📖 Usage
+
+### Commands
+
+```
+spaceheater create <count>    Create codespaces (max 3 per invocation)
+spaceheater list              List all codespaces with status
+spaceheater start [name]      Start a stopped codespace (or pick one)
+spaceheater stop [name]       Stop a running codespace
+spaceheater clean [days]      Delete codespaces older than N days (default: 7)
+spaceheater delete <name>     Delete a specific codespace
+spaceheater config            Show current configuration
+spaceheater version           Show version information
+spaceheater help              Show help message
+```
+
+### Create Codespaces
+
+```bash
+# Create 3 codespaces (the maximum per invocation)
+spaceheater create 3
+
+# They build in the background (~5-10 minutes)
+# Then auto-stop and cost nothing until you start them
+```
+
+### List Codespaces
+
+```bash
+spaceheater list
+```
+
+**Example output:**
+```
+✓ Available  ✔  fuzzy-umbrella      main         [clean]            (0h ago)
+○ Shutdown   ●  organic-sniffle     my-feature   [uncommitted, 2↑]  (1h ago)
+○ Shutdown   ⤓  sturdy-capybara     main         [3↓]               (2h ago)
+```
+
+**Status indicators:**
+- ✓ Available = Running or building
+- ○ Shutdown = Built and ready for instant start
+
+**Git indicators:**
+- ✔ Clean = No uncommitted changes
+- ● Has changes = Uncommitted or unpushed changes
+- ⤓ Behind remote = Needs pull
+
+### Start a Codespace
+
+```bash
+# Auto-select the best available codespace (prefers clean, shutdown)
+spaceheater start
+
+# Start a specific codespace
+spaceheater start fuzzy-umbrella-9wjgq56x74hxpp7
+```
+
+### Stop a Codespace
+
+```bash
+# Stop the most recently used codespace
+spaceheater stop
+
+# Stop a specific codespace
+spaceheater stop fuzzy-umbrella-9wjgq56x74hxpp7
+```
+
+### Clean Up Old Codespaces
+
+```bash
+# Delete codespaces older than 7 days
+spaceheater clean
+
+# Delete codespaces older than 14 days
+spaceheater clean 14
+```
+
+### View Configuration
+
+```bash
+spaceheater config
+```
+
+Shows current settings, detected repository, and devcontainer configuration.
+
+## ⚙️ Configuration
+
+Configure via environment variables (all optional):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SPACEHEATER_REPO` | Auto-detect from git | Repository (owner/repo format) |
+| `SPACEHEATER_BRANCH` | Auto-detect from repo | Branch to create from |
+| `SPACEHEATER_MACHINE` | Respect devcontainer | Machine type (basicLinux, standardLinux, premiumLinux, largePremiumLinux) |
+| `SPACEHEATER_RETENTION` | GitHub default | How long before auto-deletion (e.g., 168h, 720h) |
+| `SPACEHEATER_IDLE_TIMEOUT` | GitHub/org default | Idle timeout before auto-stop (e.g., 30m, 1h) |
+| `SPACEHEATER_DEVCONTAINER_PATH` | Auto-detect | Path to devcontainer.json |
+| `SPACEHEATER_LOCATION` | Auto-detect | Azure region (EastUs, WestEurope, SoutheastAsia) |
+| `SPACEHEATER_DISPLAY_NAME` | GitHub-generated | Custom display name prefix |
+| `SPACEHEATER_DEBUG` | false | Enable debug output |
+
+### Configuration Philosophy
+
+Spaceheater respects your repository's devcontainer configuration and GitHub defaults by default. This prevents unexpected costs and configuration mismatches.
+
+- **No env vars set** → Uses devcontainer `hostRequirements` or GitHub defaults (typically `basicLinux`)
+- **Env vars set** → Overrides defaults with your specified values
+
+This means spaceheater won't accidentally create expensive machines unless you explicitly request them.
+
+### Example Configurations
+
+```bash
+# Use repository defaults (recommended)
+spaceheater create 3
+
+# Override machine type for heavier workload
+SPACEHEATER_MACHINE=premiumLinux spaceheater create 2
+
+# Create on a feature branch
+SPACEHEATER_BRANCH=my-feature spaceheater create 2
+
+# Use specific devcontainer in a monorepo
+SPACEHEATER_DEVCONTAINER_PATH=.devcontainer/python/devcontainer.json spaceheater create 1
+
+# Create in specific region for lower latency
+SPACEHEATER_LOCATION=WestEurope spaceheater create 1
+
+# Multiple overrides
+SPACEHEATER_MACHINE=standardLinux SPACEHEATER_RETENTION=168h spaceheater create 1
+```
+
+**Persist settings in your shell:**
+
+```bash
+# Add to ~/.zshrc or ~/.bashrc
+export SPACEHEATER_REPO=myorg/myrepo
+export SPACEHEATER_MACHINE=premiumLinux
+```
+
+## 💡 Examples & Workflows
+
+### Morning Routine
+
+Pre-warm codespaces while you grab coffee:
+
+```bash
+# Create 3 codespaces
+spaceheater create 3
+
+# Go grab coffee (~5-10 minutes)
+# They'll auto-stop when ready
+
+# Later, start one instantly
+spaceheater start  # ~30 seconds, fully built
+```
+
+### Feature Branch Development
+
+```bash
+# Create codespaces on your feature branch
+SPACEHEATER_BRANCH=my-feature spaceheater create 2
+
+# Start one when ready
+spaceheater start
+```
+
+### Weekly Maintenance
+
+```bash
+# List all codespaces
+spaceheater list
+
+# Clean up old ones
+spaceheater clean 7
+```
+
+### Multi-Repository Workflow
+
+```bash
+# Check config for current repo
+cd ~/projects/repo1
+spaceheater config
+
+# Create for a different repo
+SPACEHEATER_REPO=myorg/repo2 spaceheater create 2
+
+# Or set default repo
+export SPACEHEATER_REPO=myorg/repo2
+spaceheater create 2
+```
+
+## 💰 Cost Optimization
+
+- **Stopped codespaces are free** - Only pay for minimal storage
+- **Codespaces auto-stop** - After idle timeout (default: GitHub/org setting)
+- **Initial build costs compute** - ~5-10 minutes of VM time
+- **After auto-stop, they're free** - Until you start them again
+- **Set retention periods** - Use `SPACEHEATER_RETENTION` to avoid accumulation
+- **Regular cleanup** - Use `spaceheater clean` to remove old codespaces
+
+**Cost comparison:**
+- Traditional: 5-10 min build time every session = $$$ per start
+- Spaceheater: 5-10 min build once, instant starts = $ initial + free thereafter
+
+## 🔧 Troubleshooting
+
+### "Not authenticated with GitHub"
+```bash
+gh auth login
+```
+
+### "Unable to detect repository"
+```bash
+# Option 1: Run from within your git repository
+cd /path/to/your/repo
+spaceheater create 1
+
+# Option 2: Set repository explicitly
+export SPACEHEATER_REPO=owner/repo
+spaceheater create 1
+```
+
+### "GitHub CLI (gh) is required"
+```bash
+# macOS
+brew install gh
+
+# Linux - see https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+```
+
+### "Python 3 is required"
+```bash
+# macOS (usually pre-installed)
+python3 --version
+
+# Linux
+sudo apt-get install python3  # Debian/Ubuntu
+sudo yum install python3       # RHEL/CentOS
+```
+
+### "No codespaces found"
+```bash
+# Create some first
+spaceheater create 1
+```
+
+### Codespace stuck in "Starting" state
+Wait 30-60 seconds - it's being provisioned. Check status:
+```bash
+spaceheater list
+```
+
+### See all available commands
+```bash
+spaceheater help
+```
+
+## 🤝 Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+**Quick development setup:**
+
+```bash
+git clone https://github.com/dbernard/spaceheater.git
+cd spaceheater
+
+# Check prerequisites
+make check
+
+# Run tests
+make test
+
+# Check syntax
+make lint
+```
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+Built with:
+- [GitHub CLI](https://cli.github.com/) - Official GitHub command-line tool
+- [GitHub Codespaces](https://github.com/features/codespaces) - Cloud-hosted development environments
+
+---
+
+**Note:** This project is not officially affiliated with GitHub.
