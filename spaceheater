@@ -156,6 +156,11 @@ check_dependencies() {
     error "GitHub CLI (gh) is required. Install from: https://cli.github.com"
   fi
 
+  # Check for jq
+  if ! command -v jq &>/dev/null; then
+    error "jq is required for JSON processing. Install from: https://jqlang.github.io/jq/"
+  fi
+
   # Check for Python 3
   if ! command -v python3 &>/dev/null; then
     error "Python 3 is required for date calculations. Install from: https://python.org"
@@ -368,7 +373,7 @@ else:
 
 # Helper function to select a codespace interactively
 select_codespace() {
-  info "Fetching available codespaces..."
+  info "Fetching available codespaces..." >&2
 
   local codespaces=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
     --jq '.codespaces | sort_by(.created_at) | reverse | .[] |
@@ -379,9 +384,9 @@ select_codespace() {
   fi
 
   # Display codespaces with numbers for selection
-  echo
-  info "Available codespaces:"
-  echo
+  echo >&2
+  info "Available codespaces:" >&2
+  echo >&2
   local i=1
   echo "$codespaces" | while IFS=$'\t' read -r name display_name state has_uncommitted has_unpushed ahead; do
     local color=""
@@ -412,11 +417,11 @@ select_codespace() {
       git_status="has changes"
     fi
 
-    echo -e "  ${i}) ${color}${status_icon} ${state}${NC} - ${display_name} [${git_status}]"
+    echo -e "  ${i}) ${color}${status_icon} ${state}${NC} - ${display_name} [${git_status}]" >&2
     i=$((i + 1))
   done
 
-  echo
+  echo >&2
   read -p "Select codespace number: " selection
 
   # Validate selection
@@ -570,8 +575,7 @@ cutoff = datetime.now(timezone.utc) - timedelta(days=$days)
 print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 ")
 
-  local to_delete=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-    --jq --arg cutoff "$cutoff_date" '
+  local to_delete=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" | jq -r --arg cutoff "$cutoff_date" '
       .codespaces |
       map(select(.created_at < $cutoff)) |
       .[] | "\(.name)\t\(.display_name // .name)\t\(.created_at)"')
