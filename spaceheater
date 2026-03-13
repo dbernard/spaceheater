@@ -5,7 +5,8 @@
 # Usage:
 #   spaceheater create <count>    Create N pre-warmed codespaces
 #   spaceheater list              List all codespaces with status
-#   spaceheater start [name]      Start a stopped codespace (or pick one)
+#   spaceheater start [name]      Start a codespace (interactive selection if no name)
+#   spaceheater autostart         Auto-select and start a clean codespace
 #   spaceheater stop [name]       Stop a running codespace
 #   spaceheater clean [days]      Delete codespaces older than N days (default: 7)
 #   spaceheater delete <name>     Delete a specific codespace
@@ -114,6 +115,9 @@ DEVCONTAINER_PATH="${SPACEHEATER_DEVCONTAINER_PATH:-}"
 DISPLAY_NAME="${SPACEHEATER_DISPLAY_NAME:-}"
 LOCATION="${SPACEHEATER_LOCATION:-}"
 
+# Connection method: browser, ssh, or code (VS Code)
+CONNECT_METHOD="${SPACEHEATER_CONNECT:-browser}"
+
 # Debug mode
 DEBUG="${SPACEHEATER_DEBUG:-false}"
 
@@ -150,6 +154,11 @@ check_dependencies() {
   # Check for GitHub CLI
   if ! command -v gh &>/dev/null; then
     error "GitHub CLI (gh) is required. Install from: https://cli.github.com"
+  fi
+
+  # Check for jq
+  if ! command -v jq &>/dev/null; then
+    error "jq is required for JSON processing. Install from: https://jqlang.github.io/jq/"
   fi
 
   # Check for Python 3
@@ -354,7 +363,7 @@ else:
     print(f'{hours}h ago')
 " 2>/dev/null || echo "")
 
-    echo -e "${color}${status_icon} ${state}${NC}\t${git_indicator}\t${display_name}\t${branch}\t[${git_details}]\t(${age})\t${name}"
+    echo -e "${color}${status_icon} ${state}${NC}\t${git_indicator}\t${display_name}\t${branch}\t[${git_details}]\t(${age})"
   done | column -t -s $'\t'
 
   echo
@@ -362,61 +371,165 @@ else:
   info "Git: ${GREEN}✔${NC}=Clean ${RED}●${NC}=Has changes ${YELLOW}⤓${NC}=Behind remote"
 }
 
+# Helper function to select a codespace interactively
+select_codespace() {
+  info "Fetching available codespaces..." >&2
+
+  local codespaces=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+    --jq '.codespaces | sort_by(.created_at) | reverse | .[] |
+      "\(.name)\t\(.display_name // .name)\t\(.state)\t\(.git_status.has_uncommitted_changes // false)\t\(.git_status.has_unpushed_changes // false)\t\(.git_status.ahead // 0)"')
+
+  if [ -z "$codespaces" ]; then
+    error "No codespaces found. Run 'spaceheater create 1' to create one."
+  fi
+
+  # Display codespaces with numbers for selection
+  echo >&2
+  info "Available codespaces:" >&2
+  echo >&2
+  local i=1
+  echo "$codespaces" | while IFS=$'\t' read -r name display_name state has_uncommitted has_unpushed ahead; do
+    local color=""
+    local status_icon=""
+
+    case "$state" in
+      Available)
+        color="$GREEN"
+        status_icon="✓"
+        ;;
+      Shutdown)
+        color="$YELLOW"
+        status_icon="○"
+        ;;
+      Starting|Provisioning)
+        color="$BLUE"
+        status_icon="↻"
+        ;;
+      *)
+        color="$NC"
+        status_icon="●"
+        ;;
+    esac
+
+    # Determine git status
+    local git_status="clean"
+    if [ "$has_uncommitted" = "true" ] || [ "$has_unpushed" = "true" ] || [ "$ahead" -gt 0 ]; then
+      git_status="has changes"
+    fi
+
+    echo -e "  ${i}) ${color}${status_icon} ${state}${NC} - ${display_name} [${git_status}]" >&2
+    i=$((i + 1))
+  done
+
+  echo >&2
+  read -p "Select codespace number: " selection
+
+  # Validate selection
+  if ! [[ "$selection" =~ ^[0-9]+$ ]]; then
+    error "Invalid selection"
+  fi
+
+  local selected_name=$(echo "$codespaces" | sed -n "${selection}p" | cut -f1)
+
+  if [ -z "$selected_name" ]; then
+    error "Invalid selection"
+  fi
+
+  echo "$selected_name"
+}
+
+# Auto-select a clean codespace
+auto_select_codespace() {
+  local codespace_name=""
+
+  # First try: Clean shutdown codespaces (preferred - fully built and ready)
+  codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+    --jq '.codespaces | map(select(.state == "Shutdown" and
+      .git_status.has_uncommitted_changes == false and
+      .git_status.has_unpushed_changes == false and
+      .git_status.ahead == 0)) |
+      sort_by(.created_at) | reverse | .[0].name // empty')
+
+  if [ -z "$codespace_name" ]; then
+    # Second try: Clean available codespaces (still running but clean)
+    codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+      --jq '.codespaces | map(select(.state == "Available" and
+        .git_status.has_uncommitted_changes == false and
+        .git_status.has_unpushed_changes == false and
+        .git_status.ahead == 0)) |
+        sort_by(.created_at) | reverse | .[0].name // empty')
+  fi
+
+  if [ -z "$codespace_name" ]; then
+    error "No clean codespaces available.\n\nAutostart requires a codespace with no uncommitted changes.\nUse 'spaceheater start' for interactive selection or 'spaceheater create' to create new codespaces."
+  fi
+
+  echo "$codespace_name"
+}
+
 cmd_start() {
   init_repo_config
   local codespace_name="$1"
 
   if [ -z "$codespace_name" ]; then
-    # Pick a clean, shutdown codespace first, then any shutdown, then available
-    info "Finding a ready codespace (preferring clean)..."
-
-    # First try: Clean shutdown codespaces
-    codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-      --jq '.codespaces | map(select(.state == "Shutdown" and
-        .git_status.has_uncommitted_changes == false and
-        .git_status.has_unpushed_changes == false and
-        .git_status.ahead == 0)) |
-        sort_by(.created_at) | reverse | .[0].name // empty')
-
-    if [ -z "$codespace_name" ]; then
-      # Second try: Any shutdown codespace
-      codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-        --jq '.codespaces | map(select(.state == "Shutdown")) | sort_by(.created_at) | reverse | .[0].name // empty')
-
-      if [ -n "$codespace_name" ]; then
-        warn "No clean codespaces found, using one with uncommitted changes"
-      fi
-    fi
-
-    if [ -z "$codespace_name" ]; then
-      # Third try: Clean available codespaces
-      codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-        --jq '.codespaces | map(select(.state == "Available" and
-          .git_status.has_uncommitted_changes == false and
-          .git_status.has_unpushed_changes == false and
-          .git_status.ahead == 0)) |
-          sort_by(.created_at) | reverse | .[0].name // empty')
-
-      if [ -z "$codespace_name" ]; then
-        # Last try: Any available codespace
-        codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-          --jq '.codespaces | map(select(.state == "Available")) | sort_by(.created_at) | reverse | .[0].name // empty')
-      fi
-
-      if [ -n "$codespace_name" ]; then
-        warn "No fully built codespaces found, using one that's still running/building"
-      else
-        error "No codespaces found. Run 'spaceheater create 1' to create one."
-      fi
-    fi
+    # Force selection when no name provided
+    codespace_name=$(select_codespace)
   fi
 
   debug "Selected codespace: $codespace_name"
   local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)"
   info "Starting codespace: ${display_name:-$codespace_name}..."
 
-  # Start the codespace and connect
-  gh codespace code -c "$codespace_name"
+  # Connect based on configured method
+  case "$CONNECT_METHOD" in
+    browser|web)
+      info "Opening in browser..."
+      gh codespace code --web -c "$codespace_name"
+      ;;
+    ssh)
+      info "Connecting via SSH..."
+      gh codespace ssh -c "$codespace_name"
+      ;;
+    code|vscode)
+      info "Opening in VS Code..."
+      gh codespace code -c "$codespace_name"
+      ;;
+    *)
+      error "Unknown connection method: $CONNECT_METHOD\nValid options: browser, ssh, code"
+      ;;
+  esac
+}
+
+cmd_autostart() {
+  init_repo_config
+
+  info "Finding a clean codespace to start..."
+
+  # Auto-select the best clean codespace
+  local codespace_name=$(auto_select_codespace)
+
+  debug "Selected codespace: $codespace_name"
+  local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)"
+  info "Starting codespace: ${display_name:-$codespace_name}..."
+
+  # Connect based on configured method
+  case "$CONNECT_METHOD" in
+    browser|web)
+      info "Opening in browser..."
+      gh codespace code --web -c "$codespace_name"
+      ;;
+    ssh)
+      info "Connecting via SSH..."
+      gh codespace ssh -c "$codespace_name"
+      ;;
+    code|vscode)
+      info "Opening in VS Code..."
+      gh codespace code -c "$codespace_name"
+      ;;
+    *)
+      error "Unknown connection method: $CONNECT_METHOD\nValid options: browser, ssh, code"
+      ;;
+  esac
 }
 
 cmd_stop() {
@@ -462,8 +575,7 @@ cutoff = datetime.now(timezone.utc) - timedelta(days=$days)
 print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 ")
 
-  local to_delete=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-    --jq --arg cutoff "$cutoff_date" '
+  local to_delete=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" | jq -r --arg cutoff "$cutoff_date" '
       .codespaces |
       map(select(.created_at < $cutoff)) |
       .[] | "\(.name)\t\(.display_name // .name)\t\(.created_at)"')
@@ -518,6 +630,9 @@ Spaceheater Configuration
 Repository Settings:
   SPACEHEATER_REPO:              ${SPACEHEATER_REPO:-<auto-detect from git>}
   SPACEHEATER_BRANCH:            ${SPACEHEATER_BRANCH:-<auto-detect from repo>}
+
+Connection Settings:
+  SPACEHEATER_CONNECT:           ${CONNECT_METHOD:-browser} (options: browser, ssh, code)
 
 Codespace Overrides (optional):
   SPACEHEATER_MACHINE:           ${MACHINE:-<use devcontainer or GitHub default>}
@@ -588,7 +703,8 @@ spaceheater: Pre-create GitHub Codespaces for faster access
 USAGE:
   spaceheater create <count>    Create codespaces (max 3 per invocation)
   spaceheater list              List all codespaces with status
-  spaceheater start [name]      Start a stopped codespace (or pick one)
+  spaceheater start [name]      Start a codespace (interactive selection if no name)
+  spaceheater autostart         Auto-select and start a clean codespace
   spaceheater stop [name]       Stop a running codespace
   spaceheater clean [days]      Delete codespaces older than N days (default: 7)
   spaceheater delete <name>     Delete a specific codespace
@@ -602,6 +718,11 @@ ENVIRONMENT VARIABLES (all optional):
 
   SPACEHEATER_BRANCH            Branch to use
                                 Default: Auto-detect repository default branch
+
+  SPACEHEATER_CONNECT           Connection method: browser, ssh, or code
+                                Default: browser (github.dev)
+                                Set to 'ssh' for terminal access
+                                Set to 'code' for VS Code desktop app
 
   SPACEHEATER_MACHINE           Machine type override
                                 Default: Respect devcontainer hostRequirements or GitHub default
@@ -644,8 +765,17 @@ EXAMPLES:
   # List all codespaces
   spaceheater list
 
-  # Start the best available codespace (prefers clean, shutdown)
+  # Start a codespace with interactive selection (default: browser)
   spaceheater start
+
+  # Auto-select and start a clean codespace (fails if none available)
+  spaceheater autostart
+
+  # Start with SSH connection for terminal access
+  SPACEHEATER_CONNECT=ssh spaceheater start
+
+  # Start with VS Code desktop app (requires VS Code installed)
+  SPACEHEATER_CONNECT=code spaceheater autostart
 
   # Start a specific codespace
   spaceheater start fictional-orbit-gw56j9gqvcpgrr
@@ -656,13 +786,24 @@ EXAMPLES:
   # Delete codespaces older than 14 days
   spaceheater clean 14
 
+  # Set SSH as your default connection method
+  export SPACEHEATER_CONNECT=ssh
+  spaceheater autostart  # Will now use SSH instead of browser
+
 HOW IT WORKS:
   Creates codespaces that build completely in the background (~5-10 minutes),
   then auto-stop after idle timeout. Once stopped, they cost nothing but can
   start in ~30 seconds with everything already built. Maximum 3 codespaces
   per invocation to prevent overuse.
 
-  By default, spaceheater respects your repository's devcontainer configuration
+  By default, codespaces open in your browser (github.dev) for universal access.
+  You can also connect via SSH for terminal access or VS Code desktop if installed.
+
+  The 'autostart' command only works with clean codespaces (no uncommitted changes)
+  to ensure a predictable development environment. Use 'start' for interactive
+  selection if you need to choose a codespace with pending changes.
+
+  Spaceheater respects your repository's devcontainer configuration
   and GitHub's defaults. Use environment variables only when you need to override.
 
 EOF
@@ -684,6 +825,9 @@ main() {
       ;;
     start)
       cmd_start "${1:-}"
+      ;;
+    autostart)
+      cmd_autostart
       ;;
     stop)
       cmd_stop "${1:-}"

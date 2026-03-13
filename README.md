@@ -12,7 +12,8 @@ Tired of waiting 5-10 minutes for Codespaces to build? `spaceheater` creates pre
 - 🚀 **Instant startup** - Pre-built codespaces start in ~30 seconds instead of 5-10 minutes
 - 🤖 **Background building** - Let codespaces build while you work on something else
 - 💰 **Cost-efficient** - Stopped codespaces cost nothing (only minimal storage)
-- 🎯 **Smart selection** - Automatically picks the best available codespace
+- 🎯 **Smart selection** - Interactive menu or auto-select clean codespaces
+- 🌐 **Universal access** - Connect via browser, SSH, or VS Code desktop
 - 🧹 **Easy cleanup** - Bulk delete old codespaces by age
 - ⚙️ **Configurable** - Respects devcontainer settings and GitHub defaults
 - 🎨 **Git-aware** - Shows uncommitted changes and sync status at a glance
@@ -31,7 +32,10 @@ spaceheater create 3
 # List your codespaces with status
 spaceheater list
 
-# Start the best available one
+# Auto-select and start a clean codespace (opens in browser)
+spaceheater autostart
+
+# Or interactively choose which one to start
 spaceheater start
 ```
 
@@ -46,7 +50,7 @@ cd spaceheater
 ```
 
 The installer will:
-- ✅ Check all prerequisites (`gh`, `python3`, `git`)
+- ✅ Check all prerequisites (`gh`, `jq`, `python3`, `git`)
 - 📁 Install to `~/.local/bin` or `/usr/local/bin`
 - 🔧 Set up shell completions (bash/zsh)
 - ✓ Verify the installation
@@ -73,20 +77,22 @@ sudo ln -s "$PWD/spaceheater/spaceheater" /usr/local/bin/spaceheater
 ### Prerequisites
 
 - [GitHub CLI (`gh`)](https://cli.github.com/) - installed and authenticated
+- [`jq`](https://jqlang.github.io/jq/) - for JSON processing
 - Python 3 - for date calculations
 - Git - for repository detection
 - Bash 4.0+ - for the script itself
 - GitHub Codespaces access on your repository
 
-**Setup GitHub CLI:**
+**Setup GitHub CLI and jq:**
 ```bash
 # Install (macOS)
-brew install gh
+brew install gh jq
 
 # Install (Linux)
-# See https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+sudo apt-get install gh jq  # Debian/Ubuntu
+# See https://github.com/cli/cli/blob/trunk/docs/install_linux.md for other distros
 
-# Authenticate
+# Authenticate with GitHub
 gh auth login
 ```
 
@@ -116,7 +122,8 @@ make uninstall
 ```
 spaceheater create <count>    Create codespaces (max 3 per invocation)
 spaceheater list              List all codespaces with status
-spaceheater start [name]      Start a stopped codespace (or pick one)
+spaceheater start [name]      Start a codespace (interactive selection if no name)
+spaceheater autostart         Auto-select and start a clean codespace
 spaceheater stop [name]       Stop a running codespace
 spaceheater clean [days]      Delete codespaces older than N days (default: 7)
 spaceheater delete <name>     Delete a specific codespace
@@ -160,12 +167,39 @@ spaceheater list
 ### Start a Codespace
 
 ```bash
-# Auto-select the best available codespace (prefers clean, shutdown)
+# Auto-select a clean codespace and start it (opens in browser by default)
+spaceheater autostart
+
+# Interactive selection - choose from a menu
 spaceheater start
 
-# Start a specific codespace
+# Start a specific codespace by name
 spaceheater start fuzzy-umbrella-9wjgq56x74hxpp7
 ```
+
+**Connection Methods:**
+
+By default, codespaces open in your browser (github.dev) for universal access. You can change the connection method:
+
+```bash
+# Open in browser (default)
+spaceheater autostart
+
+# Connect via SSH for terminal access
+SPACEHEATER_CONNECT=ssh spaceheater start
+
+# Open in VS Code desktop (requires VS Code installed)
+SPACEHEATER_CONNECT=code spaceheater autostart
+
+# Set your preferred method permanently
+export SPACEHEATER_CONNECT=ssh
+spaceheater autostart  # Now uses SSH by default
+```
+
+**Interactive vs Auto-select:**
+
+- `spaceheater start` - Shows a numbered menu of all codespaces for you to choose
+- `spaceheater autostart` - Automatically picks a clean codespace (no uncommitted changes), fails if none available
 
 ### Stop a Codespace
 
@@ -203,6 +237,7 @@ Configure via environment variables (all optional):
 |----------|---------|-------------|
 | `SPACEHEATER_REPO` | Auto-detect from git | Repository (owner/repo format) |
 | `SPACEHEATER_BRANCH` | Auto-detect from repo | Branch to create from |
+| `SPACEHEATER_CONNECT` | browser | Connection method (browser, ssh, or code) |
 | `SPACEHEATER_MACHINE` | Respect devcontainer | Machine type (basicLinux, standardLinux, premiumLinux, largePremiumLinux) |
 | `SPACEHEATER_RETENTION` | GitHub default | How long before auto-deletion (e.g., 168h, 720h) |
 | `SPACEHEATER_IDLE_TIMEOUT` | GitHub/org default | Idle timeout before auto-stop (e.g., 30m, 1h) |
@@ -247,6 +282,7 @@ SPACEHEATER_MACHINE=standardLinux SPACEHEATER_RETENTION=168h spaceheater create 
 ```bash
 # Add to ~/.zshrc or ~/.bashrc
 export SPACEHEATER_REPO=myorg/myrepo
+export SPACEHEATER_CONNECT=ssh  # Use SSH by default
 export SPACEHEATER_MACHINE=premiumLinux
 ```
 
@@ -263,8 +299,11 @@ spaceheater create 3
 # Go grab coffee (~5-10 minutes)
 # They'll auto-stop when ready
 
-# Later, start one instantly
-spaceheater start  # ~30 seconds, fully built
+# Later, start one instantly in your browser
+spaceheater autostart  # ~30 seconds, fully built
+
+# Or SSH directly into one
+SPACEHEATER_CONNECT=ssh spaceheater autostart
 ```
 
 ### Feature Branch Development
@@ -274,7 +313,7 @@ spaceheater start  # ~30 seconds, fully built
 SPACEHEATER_BRANCH=my-feature spaceheater create 2
 
 # Start one when ready
-spaceheater start
+spaceheater autostart
 ```
 
 ### Weekly Maintenance
@@ -349,6 +388,26 @@ python3 --version
 # Linux
 sudo apt-get install python3  # Debian/Ubuntu
 sudo yum install python3       # RHEL/CentOS
+```
+
+### "jq is required"
+```bash
+# macOS
+brew install jq
+
+# Linux
+sudo apt-get install jq  # Debian/Ubuntu
+sudo yum install jq      # RHEL/CentOS
+```
+
+### "No clean codespaces available"
+This means all your codespaces have uncommitted changes. Options:
+```bash
+# Use interactive selection to choose any codespace
+spaceheater start
+
+# Create new clean codespaces
+spaceheater create 1
 ```
 
 ### "No codespaces found"
