@@ -6,10 +6,10 @@ help:
 	@echo ""
 	@echo "  make install     Install spaceheater to your system"
 	@echo "  make uninstall   Uninstall spaceheater from your system"
-	@echo "  make test        Run basic tests"
+	@echo "  make test        Run test suite"
 	@echo "  make lint        Check shell script syntax"
 	@echo "  make check       Check prerequisites"
-	@echo "  make clean       Clean build artifacts"
+	@echo "  make clean       Clean test artifacts"
 	@echo ""
 
 # Install spaceheater
@@ -22,13 +22,23 @@ uninstall:
 	@echo "Running uninstaller..."
 	@bash uninstall.sh
 
-# Run tests
+# Run test suite
 test: lint
-	@echo "Testing spaceheater..."
-	@bash -c './spaceheater version'
-	@bash -c './spaceheater help > /dev/null'
-	@bash -c './spaceheater config > /dev/null || true'
-	@echo "✓ Basic tests passed"
+	@if command -v bats >/dev/null 2>&1; then \
+		echo "Running Bats test suite..."; \
+		bats test/*.bats; \
+	else \
+		echo "⚠️  Bats test framework not found"; \
+		echo "   Install from: https://github.com/bats-core/bats-core"; \
+		echo "   • macOS: brew install bats-core"; \
+		echo "   • Ubuntu/Debian: apt-get install bats"; \
+		echo "   • npm: npm install -g bats"; \
+		echo ""; \
+		echo "Falling back to basic smoke tests..."; \
+		bash -c './spaceheater version' && \
+		bash -c './spaceheater help > /dev/null' && \
+		echo "✓ Basic smoke tests passed"; \
+	fi
 
 # Lint shell scripts
 lint:
@@ -54,6 +64,10 @@ check:
 	@echo ""
 	@echo "All prerequisites satisfied!"
 
-# Clean artifacts
+# Clean test artifacts
 clean:
-	@echo "Nothing to clean"
+	@echo "Cleaning test artifacts..."
+	@rm -rf spaceheater-test-*
+	@rm -f test/*.log
+	@rm -rf test/tmp
+	@echo "✓ Test artifacts cleaned"

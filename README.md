@@ -427,6 +427,52 @@ spaceheater list
 spaceheater help
 ```
 
+## 🧪 Testing
+
+Spaceheater uses the [Bats](https://github.com/bats-core/bats-core) testing framework for its test suite. Tests ensure core functionality remains stable during development.
+
+### Running Tests
+
+```bash
+# Run the full test suite (lint + unit tests)
+make test
+
+# Just check syntax
+make lint
+
+# Clean test artifacts
+make clean
+```
+
+### Installing Bats (Optional)
+
+The test suite will fall back to basic smoke tests if Bats is not installed, but for full testing capabilities:
+
+```bash
+# macOS
+brew install bats-core
+
+# Ubuntu/Debian
+apt-get install bats
+
+# npm (cross-platform)
+npm install -g bats
+
+# From source
+git clone https://github.com/bats-core/bats-core.git
+cd bats-core
+./install.sh /usr/local
+```
+
+### Test Coverage
+
+The test suite covers:
+- ✅ All command functionality (create, list, start, stop, etc.)
+- ✅ Configuration and environment variable handling
+- ✅ Input validation and error handling
+- ✅ Mock GitHub API interactions
+- ✅ Git repository detection
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
@@ -440,12 +486,17 @@ cd spaceheater
 # Check prerequisites
 make check
 
-# Run tests
+# Run tests (requires Bats for full suite)
 make test
 
 # Check syntax
 make lint
 ```
+
+**Before submitting a PR:**
+1. Run `make test` to ensure all tests pass
+2. Add tests for any new functionality
+3. Update documentation as needed
 
 ## 📄 License
 
