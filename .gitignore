@@ -37,3 +37,16 @@ Temporary Items
 
 # Logs
 *.log
+
+# Test artifacts
+spaceheater-test-*/
+test/tmp/
+test/*.log
+gh-calls.log
+.bats/
+*.bats.log
+
+# Test coverage (if added in future)
+coverage/
+*.coverage
+.coverage*

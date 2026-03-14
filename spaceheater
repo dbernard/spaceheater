@@ -65,6 +65,7 @@ if detect_unicode; then
   ICON_TIMER="⏱"
   ICON_CALENDAR="📅"
   ICON_NEXT="🎯"
+  ICON_THERMOMETER="🌡️"
 else
   # ASCII fallbacks
   ICON_BRAND="*"
@@ -91,6 +92,7 @@ else
   ICON_TIMER="[T]"
   ICON_CALENDAR="[D]"
   ICON_NEXT="=>"
+  ICON_THERMOMETER="[TEMP]"
 fi
 
 # Get repository ID with caching
