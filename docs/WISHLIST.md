@@ -6,3 +6,4 @@ Things we might like to implement in the future:
 - [ ] Config file based configuration
 - [ ] Connection overrides (ex: `spaceheater start --ssh ...`)
 - [ ] Other overrides like default branch name (ex: `spaceheater start --branch ...`)
+- [ ] Better failure handling (failure to create still shows "5-10 minutes" tooltip)
