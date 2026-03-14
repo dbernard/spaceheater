@@ -75,10 +75,10 @@ load test_helper
     [[ "$output" =~ WARM ]]
     [[ "$output" =~ COLD ]]
 
-    # Check for codespace names
-    [[ "$output" =~ hot-space-001 ]]
-    [[ "$output" =~ warm-space-002 ]]
-    [[ "$output" =~ cold-space-003 ]]
+    # Check for codespace display names (what users actually see)
+    [[ "$output" =~ "Running Test Codespace" ]]
+    [[ "$output" =~ "Clean Stopped Codespace" ]]
+    [[ "$output" =~ "Old Dirty Codespace" ]]
 }
 
 @test "list command handles empty codespace list" {
@@ -231,8 +231,13 @@ EOF
 # =============================================================================
 
 @test "checks for required dependencies when gh is missing" {
-    # Remove gh from PATH
-    export PATH="$ORIGINAL_PATH"
+    # Create empty bin directory for this test only
+    local empty_path="${TEST_TEMP_DIR}/empty-bin"
+    mkdir -p "$empty_path"
+
+    # Set PATH to include basic system binaries but not gh
+    # This allows bash/env to work but gh won't be found
+    export PATH="/usr/bin:/bin:$empty_path"
 
     run "$SPACEHEATER" list
     [ "$status" -ne 0 ]

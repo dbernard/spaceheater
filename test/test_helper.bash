@@ -48,18 +48,36 @@ create_mock_gh() {
 # Log calls for debugging
 echo "gh $*" >> "${TEST_TEMP_DIR}/gh-calls.log"
 
-case "$1 $2" in
+case "$*" in
     "auth status")
         echo "✓ Logged in to github.com as testuser (oauth_token)"
         echo "✓ Git operations for github.com configured to use https protocol."
         exit 0
         ;;
 
-    "api repos/testorg/testrepo")
+    # Explicit match for repo ID query with --jq
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+
+    # Explicit match for repo info (without --jq)
+    "api /repos/testorg/testrepo")
         echo '{"id": 12345678, "default_branch": "main", "full_name": "testorg/testrepo"}'
         exit 0
         ;;
 
+    # Explicit match for codespace list with --jq (used by cmd_start for searching)
+    "api /user/codespaces?repository_id=12345678 --jq "*)
+        # Return tab-separated format for name and display_name
+        if [[ -f "${FIXTURES}/codespaces.json" ]]; then
+            # Simulate the jq output for the query used in cmd_start
+            cat "${FIXTURES}/codespaces.json" | command jq -r '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"' 2>/dev/null || echo ""
+        fi
+        exit 0
+        ;;
+
+    # Original case for non-jq codespace list (used by cmd_list)
     "api /user/codespaces?repository_id=12345678")
         if [[ -f "${FIXTURES}/codespaces.json" ]]; then
             cat "${FIXTURES}/codespaces.json"
@@ -69,28 +87,28 @@ case "$1 $2" in
         exit 0
         ;;
 
-    "codespace create")
+    "codespace create"*)
         echo "Creating codespace in testorg/testrepo..."
         echo "✓ Codespace created: test-created-$(date +%s)"
         exit 0
         ;;
 
-    "codespace stop")
+    "codespace stop"*)
         echo "Stopping codespace: $3"
         exit 0
         ;;
 
-    "codespace delete")
+    "codespace delete"*)
         echo "Deleting codespace: $3"
         exit 0
         ;;
 
-    "codespace code"|"codespace ssh")
+    "codespace code"*|"codespace ssh"*)
         echo "Opening codespace: ${4:-$3}"
         exit 0
         ;;
 
-    "repo view")
+    "repo view"*)
         echo "testorg/testrepo"
         exit 0
         ;;
