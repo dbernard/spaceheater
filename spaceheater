@@ -5,7 +5,7 @@
 # Usage:
 #   spaceheater create <count>    Create N pre-warmed codespaces
 #   spaceheater list              List all codespaces with status
-#   spaceheater start [name]      Start a codespace (interactive selection if no name)
+#   spaceheater start [name]      Start a codespace (fuzzy matching, no quotes needed)
 #   spaceheater autostart         Auto-select and start a clean codespace
 #   spaceheater stop [name]       Stop a running codespace
 #   spaceheater clean [days]      Delete codespaces older than N days (default: 7)
@@ -492,15 +492,49 @@ auto_select_codespace() {
 
 cmd_start() {
   init_repo_config
-  local codespace_name="${1:-}"
+  # Join all arguments to support names with spaces without escaping
+  # e.g., "spaceheater start organic sniffle" works without quotes
+  local search_term="${*}"
 
   # Build command arguments
   local -a cmd_args=()
+  local codespace_name=""
 
-  # Add codespace name if provided
-  if [ -n "$codespace_name" ]; then
+  # If search term provided, try to find matching codespace
+  if [ -n "$search_term" ]; then
+    debug "Searching for codespace matching: $search_term"
+
+    # Fetch all codespaces with their names and display names
+    local matches=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+      --jq '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"' | \
+      grep -i "$search_term" || true)
+
+    if [ -z "$matches" ]; then
+      error "No codespace found matching: $search_term"
+    fi
+
+    # Count matches
+    local match_count=$(echo "$matches" | wc -l | tr -d ' ')
+
+    if [ "$match_count" -eq 1 ]; then
+      # Single match - use it
+      codespace_name=$(echo "$matches" | cut -f1)
+      local display_name=$(echo "$matches" | cut -f2)
+      debug "Found match: $display_name"
+    else
+      # Multiple matches - show them and pick first
+      warn "Multiple codespaces match '$search_term':"
+      echo "$matches" | while IFS=$'\t' read -r name display; do
+        echo "  - $display" >&2
+      done
+      echo >&2
+
+      codespace_name=$(echo "$matches" | head -n1 | cut -f1)
+      local display_name=$(echo "$matches" | head -n1 | cut -f2)
+      info "Using first match: $display_name"
+    fi
+
     cmd_args+=(-c "$codespace_name")
-    debug "Starting specific codespace: $codespace_name"
   else
     info "Select a codespace to start..." >&2
   fi
@@ -727,7 +761,7 @@ cmd_help() {
   echo -e "${BOLD}COMMANDS${NC}"
   echo -e "  ${CYAN}create <count>${NC}     Create codespaces (max 3 per invocation)"
   echo -e "  ${CYAN}list${NC}, ${CYAN}ls${NC}           List all codespaces with status"
-  echo -e "  ${CYAN}start [name]${NC}       Start a codespace (interactive selection if no name)"
+  echo -e "  ${CYAN}start [name]${NC}       Start a codespace (supports fuzzy matching and spaces without quotes)"
   echo -e "  ${CYAN}autostart${NC}          Auto-select and start a clean codespace"
   echo -e "  ${CYAN}stop [name]${NC}        Stop a running codespace"
   echo -e "  ${CYAN}clean [days]${NC}       Delete codespaces older than N days (default: 7)"
@@ -744,8 +778,14 @@ cmd_help() {
   echo -e "  ${DIM}# List all your codespaces${NC}"
   echo -e "  ${GREEN}spaceheater list${NC}"
   echo ""
-  echo -e "  ${DIM}# Start best available codespace${NC}"
+  echo -e "  ${DIM}# Start codespace (interactive selection)${NC}"
   echo -e "  ${GREEN}spaceheater start${NC}"
+  echo ""
+  echo -e "  ${DIM}# Start codespace by exact name (no quotes needed)${NC}"
+  echo -e "  ${GREEN}spaceheater start organic sniffle${NC}"
+  echo ""
+  echo -e "  ${DIM}# Start codespace by partial name (fuzzy match)${NC}"
+  echo -e "  ${GREEN}spaceheater start probable space${NC}   ${DIM}# matches 'probable space journey'${NC}"
   echo ""
   echo -e "  ${DIM}# Clean codespaces older than 30 days${NC}"
   echo -e "  ${GREEN}spaceheater clean 30${NC}"
