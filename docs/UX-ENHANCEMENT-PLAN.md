@@ -262,7 +262,28 @@ QUICK START
 - Maintained zero external dependencies
 - Progressive enhancement approach
 
-### Phase 2: Interactive Features (Priority: Medium)
+### Phase 2: Interactive Features (Priority: Medium) - **COMPLETED**
+
+**Completion Date:** 2026-03-13
+
+**What Was Implemented:**
+1. ✅ **Interactive Selection Menu via gh CLI**
+   - Leverages `gh codespace` CLI's built-in interactive menu
+   - When no codespace name provided to `start`, gh shows its native selector
+   - Smooth, reliable experience using gh's tested implementation
+   - Handles all edge cases (spaces in names, terminal capabilities, etc.)
+
+**Implementation Decision:**
+Instead of building a custom arrow-key menu, we simplified by using gh CLI's existing interactive selection. When `spaceheater start` is called without a codespace name, it omits the `-c` flag when calling `gh codespace code/ssh`, which triggers gh's built-in menu.
+
+**Benefits:**
+- More reliable (leverages gh's tested code)
+- Simpler (no custom terminal handling needed)
+- More maintainable (removed complex cursor positioning logic)
+- Consistent with gh CLI UX patterns
+- Works across all terminal types automatically
+
+**Still Todo:**
 1. **Enhanced Progress Indicators**
    - Add spinner animations
    - Implement progress bars

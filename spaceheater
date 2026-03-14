@@ -461,73 +461,6 @@ else:
   echo -e "${DIM}Git: ${GREEN}${ICON_CLEAN}${DIM}=Clean ${RED}${ICON_DIRTY}${DIM}=Has changes ${YELLOW}${ICON_BEHIND}${DIM}=Behind remote${NC}"
 }
 
-# Helper function to select a codespace interactively
-select_codespace() {
-  info "Fetching available codespaces..." >&2
-
-  local codespaces=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-    --jq '.codespaces | sort_by(.created_at) | reverse | .[] |
-      "\(.name)\t\(.display_name // .name)\t\(.state)\t\(.git_status.has_uncommitted_changes // false)\t\(.git_status.has_unpushed_changes // false)\t\(.git_status.ahead // 0)"')
-
-  if [ -z "$codespaces" ]; then
-    error "No codespaces found. Run 'spaceheater create 1' to create one."
-  fi
-
-  # Display codespaces with numbers for selection
-  echo >&2
-  info "Available codespaces:" >&2
-  echo >&2
-  local i=1
-  echo "$codespaces" | while IFS=$'\t' read -r name display_name state has_uncommitted has_unpushed ahead; do
-    local color=""
-    local status_icon=""
-
-    case "$state" in
-      Available)
-        color="$GREEN"
-        status_icon="✓"
-        ;;
-      Shutdown)
-        color="$YELLOW"
-        status_icon="○"
-        ;;
-      Starting|Provisioning)
-        color="$BLUE"
-        status_icon="↻"
-        ;;
-      *)
-        color="$NC"
-        status_icon="●"
-        ;;
-    esac
-
-    # Determine git status
-    local git_status="clean"
-    if [ "$has_uncommitted" = "true" ] || [ "$has_unpushed" = "true" ] || [ "$ahead" -gt 0 ]; then
-      git_status="has changes"
-    fi
-
-    echo -e "  ${i}) ${color}${status_icon} ${state}${NC} - ${display_name} [${git_status}]" >&2
-    i=$((i + 1))
-  done
-
-  echo >&2
-  read -p "Select codespace number: " selection
-
-  # Validate selection
-  if ! [[ "$selection" =~ ^[0-9]+$ ]]; then
-    error "Invalid selection"
-  fi
-
-  local selected_name=$(echo "$codespaces" | sed -n "${selection}p" | cut -f1)
-
-  if [ -z "$selected_name" ]; then
-    error "Invalid selection"
-  fi
-
-  echo "$selected_name"
-}
-
 # Auto-select a clean codespace
 auto_select_codespace() {
   local codespace_name=""
@@ -559,30 +492,30 @@ auto_select_codespace() {
 
 cmd_start() {
   init_repo_config
-  local codespace_name="$1"
+  local codespace_name="${1:-}"
 
-  if [ -z "$codespace_name" ]; then
-    # Force selection when no name provided
-    codespace_name=$(select_codespace)
+  # Build command arguments
+  local -a cmd_args=()
+
+  # Add codespace name if provided
+  if [ -n "$codespace_name" ]; then
+    cmd_args+=(-c "$codespace_name")
+    debug "Starting specific codespace: $codespace_name"
+  else
+    info "Select a codespace to start..." >&2
   fi
 
-  debug "Selected codespace: $codespace_name"
-  local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)"
-  info "Starting codespace: ${display_name:-$codespace_name}..."
-
   # Connect based on configured method
+  # If no codespace name provided, gh will show its interactive menu
   case "$CONNECT_METHOD" in
     browser|web)
-      info "Opening in browser..."
-      gh codespace code --web -c "$codespace_name"
+      gh codespace code --web "${cmd_args[@]}"
       ;;
     ssh)
-      info "Connecting via SSH..."
-      gh codespace ssh -c "$codespace_name"
+      gh codespace ssh "${cmd_args[@]}"
       ;;
     code|vscode)
-      info "Opening in VS Code..."
-      gh codespace code -c "$codespace_name"
+      gh codespace code "${cmd_args[@]}"
       ;;
     *)
       error "Unknown connection method: $CONNECT_METHOD\nValid options: browser, ssh, code"
