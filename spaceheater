@@ -21,6 +21,76 @@ VERSION="1.0.0"
 # Cache for repository ID to avoid repeated API calls
 CACHED_REPO_ID=""
 
+# Terminal capability detection
+detect_unicode() {
+  # Check NO_COLOR first
+  if [ "${NO_COLOR:-}" != "" ]; then
+    return 1
+  fi
+  # Check for simple/plain UI mode
+  if [ "${SPACEHEATER_UI_STYLE:-}" = "plain" ] || [ "${SPACEHEATER_UI_STYLE:-}" = "simple" ]; then
+    return 1
+  fi
+  # Check LANG for UTF-8 support and terminal type
+  if [[ "${LANG:-}" == *UTF-8* ]] && [[ "${TERM:-}" != "linux" ]] && [[ "${TERM:-}" != "dumb" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# Icon system with Unicode/ASCII fallbacks
+if detect_unicode; then
+  # Unicode icons
+  ICON_BRAND="🔥"
+  ICON_SUCCESS="✨"
+  ICON_ERROR="❌"
+  ICON_WARNING="⚠️"
+  ICON_INFO="💡"
+  ICON_RUNNING="●"
+  ICON_STOPPED="○"
+  ICON_BUILDING="⟳"
+  ICON_CHECK="✓"
+  ICON_CROSS="✗"
+  ICON_CLEAN="✔"
+  ICON_DIRTY="●"
+  ICON_BEHIND="⤓"
+  ICON_ARROW_UP="↑"
+  ICON_ARROW_DOWN="↓"
+  ICON_ARROW_RIGHT="→"
+  ICON_REPO="📦"
+  ICON_BRANCH="🌿"
+  ICON_MACHINE="💻"
+  ICON_REGION="🌍"
+  ICON_TIMER="⏱"
+  ICON_CALENDAR="📅"
+  ICON_NEXT="🎯"
+else
+  # ASCII fallbacks
+  ICON_BRAND="*"
+  ICON_SUCCESS="[OK]"
+  ICON_ERROR="[X]"
+  ICON_WARNING="[!]"
+  ICON_INFO="[i]"
+  ICON_RUNNING="*"
+  ICON_STOPPED="o"
+  ICON_BUILDING=">"
+  ICON_CHECK="+"
+  ICON_CROSS="x"
+  ICON_CLEAN="+"
+  ICON_DIRTY="*"
+  ICON_BEHIND="v"
+  ICON_ARROW_UP="^"
+  ICON_ARROW_DOWN="v"
+  ICON_ARROW_RIGHT=">"
+  ICON_REPO="[R]"
+  ICON_BRANCH="[B]"
+  ICON_MACHINE="[M]"
+  ICON_REGION="[L]"
+  ICON_TIMER="[T]"
+  ICON_CALENDAR="[D]"
+  ICON_NEXT="=>"
+fi
+
 # Get repository ID with caching
 get_repo_id() {
   if [ -z "$CACHED_REPO_ID" ]; then
@@ -121,27 +191,46 @@ CONNECT_METHOD="${SPACEHEATER_CONNECT:-browser}"
 # Debug mode
 DEBUG="${SPACEHEATER_DEBUG:-false}"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Enhanced color palette with NO_COLOR support
+if [ "${NO_COLOR:-}" != "" ]; then
+  # No colors when NO_COLOR is set
+  RED=""
+  GREEN=""
+  YELLOW=""
+  BLUE=""
+  CYAN=""
+  MAGENTA=""
+  DIM=""
+  BOLD=""
+  NC=""
+else
+  # Color definitions
+  RED='\033[0;31m'      # Error, dirty state
+  GREEN='\033[0;32m'    # Success, clean state
+  YELLOW='\033[1;33m'   # Warning, shutdown state
+  BLUE='\033[1;34m'     # Info, starting state
+  CYAN='\033[0;36m'     # Secondary info
+  MAGENTA='\033[0;35m'  # Special emphasis
+  DIM='\033[2m'         # De-emphasized text
+  BOLD='\033[1m'        # Bold text
+  NC='\033[0m'          # No Color/Reset
+fi
 
 error() {
-  echo -e "${RED}Error: $*${NC}" >&2
+  echo -e "${RED}${ICON_ERROR} Error: $*${NC}" >&2
   exit 1
 }
 
 info() {
-  echo -e "${BLUE}$*${NC}"
+  echo -e "${BLUE}${ICON_INFO} $*${NC}"
 }
 
 success() {
-  echo -e "${GREEN}$*${NC}"
+  echo -e "${GREEN}${ICON_SUCCESS} $*${NC}"
 }
 
 warn() {
-  echo -e "${YELLOW}$*${NC}"
+  echo -e "${YELLOW}${ICON_WARNING} $*${NC}"
 }
 
 debug() {
@@ -267,10 +356,10 @@ cmd_create() {
     local codespace_name=$(echo "$output" | tail -1 | grep -E '^[a-z0-9]+-[a-z0-9]+-[a-z0-9-]+$' || echo "")
 
     if [ -n "$codespace_name" ]; then
-      success "  ✓ Created: $codespace_name"
+      success "  ${ICON_CHECK} Created: $codespace_name"
       created=$((created + 1))
     else
-      warn "  ✗ Failed to create codespace"
+      warn "  ${ICON_CROSS} Failed to create codespace"
       echo "  Output: $output"
       failed=$((failed + 1))
     fi
@@ -295,7 +384,8 @@ cmd_create() {
 
 cmd_list() {
   init_repo_config
-  info "Fetching codespaces for $REPO...\n"
+  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} - Codespaces for ${CYAN}$REPO${NC}"
+  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
 
   gh api "/user/codespaces?repository_id=$(get_repo_id)" \
     --jq '.codespaces | sort_by(.created_at) | reverse | .[] |
@@ -307,30 +397,30 @@ cmd_list() {
     case "$state" in
       Available)
         color="$GREEN"
-        status_icon="✓"
+        status_icon="$ICON_RUNNING"
         ;;
       Shutdown)
         color="$YELLOW"
-        status_icon="○"
+        status_icon="$ICON_STOPPED"
         ;;
       Starting|Provisioning)
         color="$BLUE"
-        status_icon="↻"
+        status_icon="$ICON_BUILDING"
         ;;
       *)
         color="$NC"
-        status_icon="●"
+        status_icon="$ICON_RUNNING"
         ;;
     esac
 
     # Determine git status indicator
     local git_indicator=""
     if [ "$has_uncommitted" = "true" ] || [ "$has_unpushed" = "true" ] || [ "$ahead" -gt 0 ]; then
-      git_indicator="${RED}●${NC}"  # Dirty (has changes)
+      git_indicator="${RED}${ICON_DIRTY}${NC}"  # Dirty (has changes)
     elif [ "$behind" -gt 0 ]; then
-      git_indicator="${YELLOW}⤓${NC}"  # Behind remote
+      git_indicator="${YELLOW}${ICON_BEHIND}${NC}"  # Behind remote
     else
-      git_indicator="${GREEN}✔${NC}"  # Clean
+      git_indicator="${GREEN}${ICON_CLEAN}${NC}"  # Clean
     fi
 
     # Build git status details
@@ -340,11 +430,11 @@ cmd_list() {
     fi
     if [ "$has_unpushed" = "true" ] || [ "$ahead" -gt 0 ]; then
       if [ -n "$git_details" ]; then git_details="${git_details}, "; fi
-      git_details="${git_details}${ahead}↑"
+      git_details="${git_details}${ahead}${ICON_ARROW_UP}"
     fi
     if [ "$behind" -gt 0 ]; then
       if [ -n "$git_details" ]; then git_details="${git_details}, "; fi
-      git_details="${git_details}${behind}↓"
+      git_details="${git_details}${behind}${ICON_ARROW_DOWN}"
     fi
     if [ -z "$git_details" ]; then
       git_details="clean"
@@ -363,12 +453,12 @@ else:
     print(f'{hours}h ago')
 " 2>/dev/null || echo "")
 
-    echo -e "${color}${status_icon} ${state}${NC}\t${git_indicator}\t${display_name}\t${branch}\t[${git_details}]\t(${age})"
+    echo -e "${color}${status_icon} ${state}${NC}\t${git_indicator}\t${display_name}\t${branch}\t[${git_details}]\t${DIM}(${age})${NC}"
   done | column -t -s $'\t'
 
-  echo
-  info "States: ✓=Available (running/building) ○=Shutdown (built & ready) ↻=Starting ●=Other"
-  info "Git: ${GREEN}✔${NC}=Clean ${RED}●${NC}=Has changes ${YELLOW}⤓${NC}=Behind remote"
+  echo -e "\n${DIM}────────────────────────────────────────────────────────────────${NC}"
+  echo -e "${DIM}States: ${GREEN}${ICON_RUNNING}${DIM}=Available ${YELLOW}${ICON_STOPPED}${DIM}=Shutdown ${BLUE}${ICON_BUILDING}${DIM}=Starting${NC}"
+  echo -e "${DIM}Git: ${GREEN}${ICON_CLEAN}${DIM}=Clean ${RED}${ICON_DIRTY}${DIM}=Has changes ${YELLOW}${ICON_BEHIND}${DIM}=Behind remote${NC}"
 }
 
 # Helper function to select a codespace interactively
@@ -601,9 +691,9 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
   echo "$to_delete" | while IFS=$'\t' read -r name display_name created_at; do
     info "Deleting: $display_name"
     if gh codespace delete -c "$name" --force; then
-      success "  ✓ Deleted"
+      success "  ${ICON_CHECK} Deleted"
     else
-      warn "  ✗ Failed to delete"
+      warn "  ${ICON_CROSS} Failed to delete"
     fi
   done
 
@@ -612,7 +702,7 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 
 cmd_delete() {
   init_repo_config
-  local codespace_name="$1"
+  local codespace_name="${1:-}"
 
   if [ -z "$codespace_name" ]; then
     error "Usage: spaceheater delete <codespace-name>"
@@ -624,189 +714,125 @@ cmd_delete() {
 }
 
 cmd_config() {
-  cat << EOF
-Spaceheater Configuration
-=========================
-Repository Settings:
-  SPACEHEATER_REPO:              ${SPACEHEATER_REPO:-<auto-detect from git>}
-  SPACEHEATER_BRANCH:            ${SPACEHEATER_BRANCH:-<auto-detect from repo>}
+  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER CONFIGURATION${NC}"
+  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
 
-Connection Settings:
-  SPACEHEATER_CONNECT:           ${CONNECT_METHOD:-browser} (options: browser, ssh, code)
+  echo -e "${BOLD}Repository Settings:${NC}"
+  echo -e "  ${ICON_REPO} SPACEHEATER_REPO:              ${CYAN}${SPACEHEATER_REPO:-<auto-detect from git>}${NC}"
+  echo -e "  ${ICON_BRANCH} SPACEHEATER_BRANCH:            ${CYAN}${SPACEHEATER_BRANCH:-<auto-detect from repo>}${NC}"
+  echo ""
 
-Codespace Overrides (optional):
-  SPACEHEATER_MACHINE:           ${MACHINE:-<use devcontainer or GitHub default>}
-  SPACEHEATER_RETENTION:         ${RETENTION:-<use GitHub default>}
-  SPACEHEATER_IDLE_TIMEOUT:      ${IDLE_TIMEOUT:-<use GitHub/org default>}
-  SPACEHEATER_DEVCONTAINER_PATH: ${DEVCONTAINER_PATH:-<auto-detect>}
-  SPACEHEATER_LOCATION:          ${LOCATION:-<auto-detect closest region>}
-  SPACEHEATER_DISPLAY_NAME:      ${DISPLAY_NAME:-<GitHub-generated>}
+  echo -e "${BOLD}Connection Settings:${NC}"
+  echo -e "  ${ICON_ARROW_RIGHT} SPACEHEATER_CONNECT:           ${CYAN}${CONNECT_METHOD:-browser}${NC} ${DIM}(options: browser, ssh, code)${NC}"
+  echo ""
 
-Debug Settings:
-  SPACEHEATER_DEBUG:             ${DEBUG:-false}
+  echo -e "${BOLD}Codespace Overrides ${DIM}(optional):${NC}"
+  echo -e "  ${ICON_MACHINE} SPACEHEATER_MACHINE:           ${CYAN}${MACHINE:-<use devcontainer or GitHub default>}${NC}"
+  echo -e "  ${ICON_TIMER} SPACEHEATER_RETENTION:         ${CYAN}${RETENTION:-<use GitHub default>}${NC}"
+  echo -e "  ${ICON_TIMER} SPACEHEATER_IDLE_TIMEOUT:      ${CYAN}${IDLE_TIMEOUT:-<use GitHub/org default>}${NC}"
+  echo -e "  ${ICON_REPO} SPACEHEATER_DEVCONTAINER_PATH: ${CYAN}${DEVCONTAINER_PATH:-<auto-detect>}${NC}"
+  echo -e "  ${ICON_REGION} SPACEHEATER_LOCATION:          ${CYAN}${LOCATION:-<auto-detect closest region>}${NC}"
+  echo -e "  ${ICON_CALENDAR} SPACEHEATER_DISPLAY_NAME:      ${CYAN}${DISPLAY_NAME:-<GitHub-generated>}${NC}"
+  echo ""
 
-Current Detection:
-EOF
+  echo -e "${BOLD}Debug Settings:${NC}"
+  echo -e "  ${ICON_INFO} SPACEHEATER_DEBUG:             ${CYAN}${DEBUG:-false}${NC}"
+  echo ""
+
+  echo -e "${BOLD}Current Detection:${NC}"
 
   # Try to detect and show current values
   if detect_repo &>/dev/null; then
     local detected_repo=$(detect_repo)
-    echo "  Detected Repository:           $detected_repo"
-    echo "  Detected Branch:               $(detect_default_branch)"
+    echo -e "  ${ICON_CHECK} Detected Repository:           ${GREEN}$detected_repo${NC}"
+    echo -e "  ${ICON_CHECK} Detected Branch:               ${GREEN}$(detect_default_branch)${NC}"
 
     # Try to show devcontainer info if we're in the repo
     if [ -f ".devcontainer/devcontainer.json" ]; then
-      echo "  Devcontainer:                  .devcontainer/devcontainer.json (found)"
+      echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer/devcontainer.json (found)${NC}"
 
       # Try to extract hostRequirements if jq is available
       if command -v jq &>/dev/null; then
         local cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
         local memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
         if [ -n "$cpus" ] || [ -n "$memory" ]; then
-          echo "  Devcontainer Requirements:     ${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}"
+          echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
         fi
       fi
     elif [ -f ".devcontainer.json" ]; then
-      echo "  Devcontainer:                  .devcontainer.json (found)"
+      echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer.json (found)${NC}"
     else
-      echo "  Devcontainer:                  <none - will use GitHub default image>"
+      echo -e "  ${ICON_INFO} Devcontainer:                  ${DIM}<none - will use GitHub default image>${NC}"
     fi
   else
-    echo "  Detected Repository:           <none - not in a git repo>"
+    echo -e "  ${ICON_CROSS} Detected Repository:           ${DIM}<none - not in a git repo>${NC}"
   fi
 
-  echo
-  echo "Configuration Philosophy:"
-  echo "  spaceheater respects your repository's devcontainer and GitHub's defaults."
-  echo "  Only set environment variables when you need to override these defaults."
-  echo
-  echo "To override a setting:"
-  echo "  export SPACEHEATER_MACHINE=premiumLinux"
-  echo "  export SPACEHEATER_RETENTION=168h"
+  echo -e "\n${DIM}────────────────────────────────────────────────────────────────${NC}"
+  echo -e "${BOLD}${ICON_INFO} Configuration Philosophy:${NC}"
+  echo -e "  Spaceheater respects your repository's devcontainer and GitHub's defaults."
+  echo -e "  Only set environment variables when you need to override these defaults."
+  echo ""
+  echo -e "${BOLD}${ICON_NEXT} To override a setting:${NC}"
+  echo -e "  ${DIM}export SPACEHEATER_MACHINE=premiumLinux${NC}"
+  echo -e "  ${DIM}export SPACEHEATER_RETENTION=168h${NC}"
 }
 
 cmd_version() {
-  cat << EOF
-spaceheater version $VERSION
-
-A tool for pre-creating fully-built GitHub Codespaces that are ready for instant startup.
-
-Project: https://github.com/dbernard/spaceheater
-License: MIT
-EOF
+  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} version ${CYAN}$VERSION${NC}"
+  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+  echo -e "A tool for pre-creating fully-built GitHub Codespaces that are ready for instant startup."
+  echo ""
+  echo -e "${ICON_REPO} Project: ${CYAN}https://github.com/dbernard/spaceheater${NC}"
+  echo -e "${ICON_CALENDAR} License: ${CYAN}MIT${NC}"
 }
 
 cmd_help() {
-  cat << EOF
-spaceheater: Pre-create GitHub Codespaces for faster access
+  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} - Pre-create GitHub Codespaces for faster access"
+  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
 
-USAGE:
-  spaceheater create <count>    Create codespaces (max 3 per invocation)
-  spaceheater list              List all codespaces with status
-  spaceheater start [name]      Start a codespace (interactive selection if no name)
-  spaceheater autostart         Auto-select and start a clean codespace
-  spaceheater stop [name]       Stop a running codespace
-  spaceheater clean [days]      Delete codespaces older than N days (default: 7)
-  spaceheater delete <name>     Delete a specific codespace
-  spaceheater config            Show current configuration
-  spaceheater version           Show version information
-  spaceheater help              Show this help
+  echo -e "${BOLD}COMMANDS${NC}"
+  echo -e "  ${CYAN}create <count>${NC}     Create codespaces (max 3 per invocation)"
+  echo -e "  ${CYAN}list${NC}, ${CYAN}ls${NC}           List all codespaces with status"
+  echo -e "  ${CYAN}start [name]${NC}       Start a codespace (interactive selection if no name)"
+  echo -e "  ${CYAN}autostart${NC}          Auto-select and start a clean codespace"
+  echo -e "  ${CYAN}stop [name]${NC}        Stop a running codespace"
+  echo -e "  ${CYAN}clean [days]${NC}       Delete codespaces older than N days (default: 7)"
+  echo -e "  ${CYAN}delete <name>${NC}      Delete a specific codespace"
+  echo -e "  ${CYAN}config${NC}             Show current configuration"
+  echo -e "  ${CYAN}version${NC}            Show version information"
+  echo -e "  ${CYAN}help${NC}               Show this help"
 
-ENVIRONMENT VARIABLES (all optional):
-  SPACEHEATER_REPO              Repository (owner/repo format)
-                                Default: Auto-detect from current git repo
+  echo ""
+  echo -e "${BOLD}EXAMPLES${NC}"
+  echo -e "  ${DIM}# Create 2 pre-warmed codespaces${NC}"
+  echo -e "  ${GREEN}spaceheater create 2${NC}"
+  echo ""
+  echo -e "  ${DIM}# List all your codespaces${NC}"
+  echo -e "  ${GREEN}spaceheater list${NC}"
+  echo ""
+  echo -e "  ${DIM}# Start best available codespace${NC}"
+  echo -e "  ${GREEN}spaceheater start${NC}"
+  echo ""
+  echo -e "  ${DIM}# Clean codespaces older than 30 days${NC}"
+  echo -e "  ${GREEN}spaceheater clean 30${NC}"
 
-  SPACEHEATER_BRANCH            Branch to use
-                                Default: Auto-detect repository default branch
+  echo ""
+  echo -e "${BOLD}QUICK START${NC}"
+  echo -e "  1. Run '${CYAN}spaceheater create 1${NC}' to create your first codespace"
+  echo -e "  2. Wait 5-10 minutes for it to build"
+  echo -e "  3. Run '${CYAN}spaceheater start${NC}' to connect instantly!"
 
-  SPACEHEATER_CONNECT           Connection method: browser, ssh, or code
-                                Default: browser (github.dev)
-                                Set to 'ssh' for terminal access
-                                Set to 'code' for VS Code desktop app
-
-  SPACEHEATER_MACHINE           Machine type override
-                                Default: Respect devcontainer hostRequirements or GitHub default
-                                Options: basicLinux, standardLinux, premiumLinux, largePremiumLinux
-
-  SPACEHEATER_RETENTION         Retention period override
-                                Default: GitHub default (typically 30 days)
-                                Format: 168h, 720h, etc.
-
-  SPACEHEATER_IDLE_TIMEOUT      Idle timeout override
-                                Default: GitHub/org default (typically 30 minutes)
-                                Format: 30m, 1h, etc.
-
-  SPACEHEATER_DEVCONTAINER_PATH Path to devcontainer.json
-                                Default: Auto-detect (.devcontainer/devcontainer.json)
-
-  SPACEHEATER_LOCATION          Azure region override
-                                Default: Closest to your location
-                                Options: EastUs, WestEurope, SoutheastAsia, etc.
-
-  SPACEHEATER_DISPLAY_NAME      Custom display name prefix (counter will be appended)
-                                Default: GitHub-generated name
-
-EXAMPLES:
-  # Create 3 codespaces with repository defaults
-  spaceheater create 3
-
-  # Override machine type for heavier workload
-  SPACEHEATER_MACHINE=premiumLinux spaceheater create 2
-
-  # Use specific devcontainer configuration
-  SPACEHEATER_DEVCONTAINER_PATH=.devcontainer/python/devcontainer.json spaceheater create 1
-
-  # Create in specific region for lower latency
-  SPACEHEATER_LOCATION=WestEurope spaceheater create 1
-
-  # Combine multiple overrides
-  SPACEHEATER_MACHINE=standardLinux SPACEHEATER_RETENTION=168h spaceheater create 1
-
-  # List all codespaces
-  spaceheater list
-
-  # Start a codespace with interactive selection (default: browser)
-  spaceheater start
-
-  # Auto-select and start a clean codespace (fails if none available)
-  spaceheater autostart
-
-  # Start with SSH connection for terminal access
-  SPACEHEATER_CONNECT=ssh spaceheater start
-
-  # Start with VS Code desktop app (requires VS Code installed)
-  SPACEHEATER_CONNECT=code spaceheater autostart
-
-  # Start a specific codespace
-  spaceheater start fictional-orbit-gw56j9gqvcpgrr
-
-  # Stop the most recently used codespace
-  spaceheater stop
-
-  # Delete codespaces older than 14 days
-  spaceheater clean 14
-
-  # Set SSH as your default connection method
-  export SPACEHEATER_CONNECT=ssh
-  spaceheater autostart  # Will now use SSH instead of browser
-
-HOW IT WORKS:
-  Creates codespaces that build completely in the background (~5-10 minutes),
-  then auto-stop after idle timeout. Once stopped, they cost nothing but can
-  start in ~30 seconds with everything already built. Maximum 3 codespaces
-  per invocation to prevent overuse.
-
-  By default, codespaces open in your browser (github.dev) for universal access.
-  You can also connect via SSH for terminal access or VS Code desktop if installed.
-
-  The 'autostart' command only works with clean codespaces (no uncommitted changes)
-  to ensure a predictable development environment. Use 'start' for interactive
-  selection if you need to choose a codespace with pending changes.
-
-  Spaceheater respects your repository's devcontainer configuration
-  and GitHub's defaults. Use environment variables only when you need to override.
-
-EOF
+  echo ""
+  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}"
+  echo -e "${BOLD}${ICON_INFO} HOW IT WORKS${NC}"
+  echo ""
+  echo -e "Creates codespaces that build completely in the background (~5-10 minutes),"
+  echo -e "then auto-stop after idle timeout. Once stopped, they cost nothing but can"
+  echo -e "start in ~30 seconds with everything already built."
+  echo ""
+  echo -e "For more information and advanced usage, see:"
+  echo -e "${CYAN}https://github.com/dbernard/spaceheater${NC}"
 }
 
 # Main
