@@ -7,12 +7,93 @@ export PROJECT_ROOT="${BATS_TEST_DIRNAME}/.."
 export SPACEHEATER="${PROJECT_ROOT}/spaceheater"
 export FIXTURES="${BATS_TEST_DIRNAME}/fixtures"
 
+# Generate codespaces fixture with relative dates
+# This ensures test dates remain realistic over time
+generate_codespaces_fixture() {
+    local target_file="$1"
+
+    # Generate relative timestamps (cross-platform compatible)
+    local now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Calculate relative dates based on epoch seconds for cross-platform compatibility
+    local now_epoch=$(date +%s)
+    local two_hours_ago_epoch=$((now_epoch - 7200))
+    local yesterday_epoch=$((now_epoch - 86400))
+    local two_weeks_ago_epoch=$((now_epoch - 1209600))
+
+    # Convert back to ISO 8601 format
+    local two_hours_ago=$(date -u -r $two_hours_ago_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$two_hours_ago_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local yesterday_created=$(date -u -r $yesterday_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$yesterday_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local yesterday_updated=$(date -u -r $((yesterday_epoch + 28800)) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$((yesterday_epoch + 28800))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local two_weeks_ago_created=$(date -u -r $two_weeks_ago_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$two_weeks_ago_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local two_weeks_ago_updated=$(date -u -r $((two_weeks_ago_epoch + 28800)) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$((two_weeks_ago_epoch + 28800))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+
+    # Generate fixture with relative dates
+    cat > "$target_file" << EOF
+{
+  "codespaces": [
+    {
+      "name": "hot-space-001",
+      "display_name": "Running Test Codespace",
+      "state": "Available",
+      "created_at": "$two_hours_ago",
+      "updated_at": "$now",
+      "git_status": {
+        "ahead": 0,
+        "behind": 0,
+        "has_uncommitted_changes": false,
+        "has_unpushed_changes": false
+      },
+      "machine": {
+        "display_name": "2 cores, 8 GB RAM"
+      }
+    },
+    {
+      "name": "warm-space-002",
+      "display_name": "Clean Stopped Codespace",
+      "state": "Shutdown",
+      "created_at": "$yesterday_created",
+      "updated_at": "$yesterday_updated",
+      "git_status": {
+        "ahead": 0,
+        "behind": 0,
+        "has_uncommitted_changes": false,
+        "has_unpushed_changes": false
+      },
+      "machine": {
+        "display_name": "4 cores, 16 GB RAM"
+      }
+    },
+    {
+      "name": "cold-space-003",
+      "display_name": "Old Dirty Codespace",
+      "state": "Shutdown",
+      "created_at": "$two_weeks_ago_created",
+      "updated_at": "$two_weeks_ago_updated",
+      "git_status": {
+        "ahead": 2,
+        "behind": 1,
+        "has_uncommitted_changes": true,
+        "has_unpushed_changes": true
+      },
+      "machine": {
+        "display_name": "2 cores, 8 GB RAM"
+      }
+    }
+  ]
+}
+EOF
+}
+
 # Setup function - runs before each test
 setup() {
     # Create temp directory for test isolation
     export TEST_TEMP_DIR="$(mktemp -d -t spaceheater-test.XXXXXX)"
     export MOCK_BIN_DIR="${TEST_TEMP_DIR}/bin"
     mkdir -p "$MOCK_BIN_DIR"
+
+    # Generate dynamic fixture with current relative dates
+    generate_codespaces_fixture "${FIXTURES}/codespaces.json"
 
     # Add mock bin to PATH (before real commands)
     export ORIGINAL_PATH="$PATH"
@@ -33,13 +114,32 @@ teardown() {
     # Restore original PATH
     export PATH="$ORIGINAL_PATH"
 
-    # Clean up temp directory
-    if [[ -d "$TEST_TEMP_DIR" ]]; then
+    # Clean up temp directory with safety check
+    # Only delete if it's a spaceheater test directory to prevent accidental deletions
+    if [[ -d "$TEST_TEMP_DIR" && "$TEST_TEMP_DIR" == */spaceheater-test.* ]]; then
         rm -rf "$TEST_TEMP_DIR"
     fi
 }
 
 # Create a basic mock gh command
+#
+# IMPORTANT: Mock-Script Coupling
+# ===============================
+# This mock is tightly coupled to the exact jq query patterns used in the main
+# spaceheater script. If you change jq queries in spaceheater, update the mock
+# accordingly. Known coupling points:
+#
+#   get_repo_id()    - '--jq .id' for repository ID lookup
+#   cmd_start()      - '--jq '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"''
+#                      for tab-separated codespace name/display_name pairs
+#   cmd_list()       - Full JSON response (no --jq) for codespace list display
+#   cmd_cleanup()    - '--jq' queries for filtering Shutdown and Available codespaces
+#
+# The mock matches these patterns using shell case statements. Changes to the main
+# script's jq queries may cause tests to silently break if the mock isn't updated.
+#
+# To detect coupling breaks, grep for '--jq' in the main script and verify all
+# patterns are handled by the mock cases below.
 create_mock_gh() {
     cat > "${MOCK_BIN_DIR}/gh" << 'EOF'
 #!/usr/bin/env bash
