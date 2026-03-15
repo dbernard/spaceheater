@@ -4,7 +4,6 @@
       "Bash(./spaceheater help:*)",
       "Bash(bats:*)",
       "Bash(make test:*)",
-      "Bash(gh pr comment:*)",
       "Bash(./spaceheater version:*)"
     ],
     "deny": [],
