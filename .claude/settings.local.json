@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./spaceheater help:*)",
+      "Bash(bats:*)",
+      "Bash(make test:*)",
+      "Bash(./spaceheater version:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
