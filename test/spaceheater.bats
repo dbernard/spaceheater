@@ -219,7 +219,8 @@ EOF
     create_mock_gh
     create_mock_jq
 
-    run "$SPACEHEATER" delete cold-space-003
+    # Need to pass 'y' to confirmation prompt
+    run bash -c "echo 'y' | '$SPACEHEATER' delete cold-space-003"
     [ "$status" -eq 0 ]
     [[ "$output" =~ [Dd]elet ]]
 
