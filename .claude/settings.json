@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "allowed_commands": [
+      "bash -n *",
+      "make test",
+      "make lint",
+      "make check",
+      "make clean",
+      "make help",
+      "bats *",
+      "./spaceheater help",
+      "./spaceheater version",
+      "./spaceheater config",
+      "./spaceheater list",
+      "gh codespace list",
+      "gh api *",
+      "gh pr *",
+      "git status",
+      "git diff *",
+      "git log *",
+      "git branch *",
+      "git remote *",
+      "git rev-parse *",
+      "python3 -c *",
+      "shellcheck *",
+      "which *",
+      "command -v *"
+    ]
+  },
+  "auto_context": {
+    "always_include": [
+      ".claude/project.md",
+      ".claude/style.md"
+    ],
+    "on_test_changes": [
+      ".claude/testing.md",
+      "test/test_helper.bash"
+    ]
+  },
+  "project": {
+    "type": "cli-tool",
+    "language": "bash",
+    "testing_framework": "bats",
+    "version": "1.0.0",
+    "description": "GitHub Codespaces management tool"
+  }
+}
