@@ -50,10 +50,12 @@ cd spaceheater
 ```
 
 The installer will:
-- ✅ Check all prerequisites (`gh`, `jq`, `python3`, `git`)
+- ✅ Check prerequisites (`gh`, `python3`, `git`) and GitHub authentication
 - 📁 Install to `~/.local/bin` or `/usr/local/bin`
 - 🔧 Set up shell completions (bash/zsh)
 - ✓ Verify the installation
+
+**Note:** Ensure `jq` is installed before running the installer (it's required by spaceheater but not checked during installation).
 
 **Alternative with Make:**
 ```bash
@@ -148,6 +150,13 @@ spaceheater create 3
 spaceheater list
 ```
 
+The list command groups codespaces by **temperature**, showing their readiness for immediate use:
+
+**Temperature categories:**
+- 🔥 **HOT** - Running codespaces (immediately available)
+- ♨️ **WARM** - Shutdown but clean & recent (≤3 days old) - quick to restart
+- 🧊 **COLD** - Old or dirty codespaces - need maintenance first
+
 **Example output:**
 ```
 ✓ Available  ✔  fuzzy-umbrella      main         [clean]            (0h ago)
@@ -156,8 +165,8 @@ spaceheater list
 ```
 
 **Status indicators:**
-- ✓ Available = Running or building
-- ○ Shutdown = Built and ready for instant start
+- ✓ Available = Running or building (often HOT)
+- ○ Shutdown = Built and ready for instant start (WARM or COLD)
 
 **Git indicators:**
 - ✔ Clean = No uncommitted changes
@@ -173,9 +182,16 @@ spaceheater autostart
 # Interactive selection - choose from a menu
 spaceheater start
 
-# Start a specific codespace by name
+# Start by exact name (no quotes needed)
 spaceheater start fuzzy-umbrella-9wjgq56x74hxpp7
+
+# Start by partial name with fuzzy matching
+spaceheater start fuzzy umbrella    # matches 'fuzzy-umbrella-9wjgq56x74hxpp7'
+spaceheater start organic sniffle   # matches 'organic-sniffle-...'
 ```
+
+**Fuzzy Matching:**
+The start command supports flexible name matching that works with partial names and spaces. No quotes needed—just type part of the codespace name. Useful for names with hyphens or when you don't want to type the full random suffix.
 
 **Connection Methods:**
 
