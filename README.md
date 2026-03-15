@@ -121,12 +121,12 @@ make uninstall
 
 ```
 spaceheater create <count>    Create codespaces (max 3 per invocation)
-spaceheater list              List all codespaces with status
+spaceheater list|ls           List all codespaces with status
 spaceheater start [name]      Start a codespace (interactive selection if no name)
 spaceheater autostart         Auto-select and start a clean codespace
 spaceheater stop [name]       Stop a running codespace
 spaceheater clean [days]      Delete codespaces older than N days (default: 7)
-spaceheater delete <name>     Delete a specific codespace
+spaceheater delete|rm <name>  Delete a specific codespace
 spaceheater config            Show current configuration
 spaceheater version           Show version information
 spaceheater help              Show help message
@@ -238,13 +238,15 @@ Configure via environment variables (all optional):
 | `SPACEHEATER_REPO` | Auto-detect from git | Repository (owner/repo format) |
 | `SPACEHEATER_BRANCH` | Auto-detect from repo | Branch to create from |
 | `SPACEHEATER_CONNECT` | browser | Connection method (browser, ssh, or code) |
-| `SPACEHEATER_MACHINE` | Respect devcontainer | Machine type (basicLinux, standardLinux, premiumLinux, largePremiumLinux) |
+| `SPACEHEATER_MACHINE` | Respect devcontainer | Machine type (basicLinux, basicLinux32gb, standardLinux, standardLinux32gb, premiumLinux, premiumLinux32gb, largePremiumLinux) |
 | `SPACEHEATER_RETENTION` | GitHub default | How long before auto-deletion (e.g., 168h, 720h) |
 | `SPACEHEATER_IDLE_TIMEOUT` | GitHub/org default | Idle timeout before auto-stop (e.g., 30m, 1h) |
 | `SPACEHEATER_DEVCONTAINER_PATH` | Auto-detect | Path to devcontainer.json |
 | `SPACEHEATER_LOCATION` | Auto-detect | Azure region (EastUs, WestEurope, SoutheastAsia) |
 | `SPACEHEATER_DISPLAY_NAME` | GitHub-generated | Custom display name prefix |
 | `SPACEHEATER_DEBUG` | false | Enable debug output |
+| `NO_COLOR` | (not set) | Disable colored output when set to any value |
+| `SPACEHEATER_UI_STYLE` | Auto-detect | Force UI mode: plain or simple for limited terminals |
 
 ### Configuration Philosophy
 
