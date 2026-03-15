@@ -647,16 +647,30 @@ cmd_start() {
       local display_name=$(echo "$matches" | cut -f2)
       debug "Found match: $display_name"
     else
-      # Multiple matches - show them and pick first
-      warn "Multiple codespaces match '$search_term':"
-      echo "$matches" | while IFS=$'\t' read -r name display; do
-        echo "  - $display" >&2
-      done
+      # Multiple matches - let user select interactively
+      info "Multiple codespaces match '$search_term':"
       echo >&2
 
-      codespace_name=$(echo "$matches" | head -n1 | cut -f1)
-      local display_name=$(echo "$matches" | head -n1 | cut -f2)
-      info "Using first match: $display_name"
+      # Build arrays for selection
+      local -a display_names=()
+      local -a codespace_names=()
+      while IFS=$'\t' read -r name display; do
+        codespace_names+=("$name")
+        display_names+=("$display")
+      done <<< "$matches"
+
+      # Interactive selection
+      PS3="Select codespace number: "
+      select display_name in "${display_names[@]}"; do
+        if [ -n "$display_name" ]; then
+          local index=$((REPLY - 1))
+          codespace_name="${codespace_names[$index]}"
+          debug "Selected: $display_name"
+          break
+        else
+          echo "Invalid selection. Please try again." >&2
+        fi
+      done
     fi
 
     cmd_args+=(-c "$codespace_name")
@@ -753,16 +767,30 @@ cmd_stop() {
       local display_name=$(echo "$matches" | cut -f2)
       debug "Found match: $display_name"
     else
-      # Multiple matches - show them and pick first
-      warn "Multiple codespaces match '$search_term':"
-      echo "$matches" | while IFS=$'\t' read -r name display; do
-        echo "  - $display" >&2
-      done
+      # Multiple matches - let user select interactively
+      info "Multiple codespaces match '$search_term':"
       echo >&2
 
-      codespace_name=$(echo "$matches" | head -n1 | cut -f1)
-      local display_name=$(echo "$matches" | head -n1 | cut -f2)
-      info "Using first match: $display_name"
+      # Build arrays for selection
+      local -a display_names=()
+      local -a codespace_names=()
+      while IFS=$'\t' read -r name display; do
+        codespace_names+=("$name")
+        display_names+=("$display")
+      done <<< "$matches"
+
+      # Interactive selection
+      PS3="Select codespace number: "
+      select display_name in "${display_names[@]}"; do
+        if [ -n "$display_name" ]; then
+          local index=$((REPLY - 1))
+          codespace_name="${codespace_names[$index]}"
+          debug "Selected: $display_name"
+          break
+        else
+          echo "Invalid selection. Please try again." >&2
+        fi
+      done
     fi
   fi
 
@@ -861,16 +889,30 @@ cmd_delete() {
     display_name=$(echo "$matches" | cut -f2)
     debug "Found match: $display_name"
   else
-    # Multiple matches - show them and confirm
-    warn "Multiple codespaces match '$search_term':"
-    echo "$matches" | while IFS=$'\t' read -r name display; do
-      echo "  - $display" >&2
-    done
+    # Multiple matches - let user select interactively
+    info "Multiple codespaces match '$search_term':"
     echo >&2
 
-    codespace_name=$(echo "$matches" | head -n1 | cut -f1)
-    display_name=$(echo "$matches" | head -n1 | cut -f2)
-    info "Using first match: $display_name"
+    # Build arrays for selection
+    local -a display_names=()
+    local -a codespace_names=()
+    while IFS=$'\t' read -r name display; do
+      codespace_names+=("$name")
+      display_names+=("$display")
+    done <<< "$matches"
+
+    # Interactive selection
+    PS3="Select codespace number: "
+    select display_name in "${display_names[@]}"; do
+      if [ -n "$display_name" ]; then
+        local index=$((REPLY - 1))
+        codespace_name="${codespace_names[$index]}"
+        debug "Selected: $display_name"
+        break
+      else
+        echo "Invalid selection. Please try again." >&2
+      fi
+    done
   fi
 
   info "Deleting codespace: $display_name"

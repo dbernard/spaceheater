@@ -191,7 +191,7 @@ spaceheater start organic sniffle   # matches 'organic-sniffle-...'
 ```
 
 **Fuzzy Matching:**
-The start command supports flexible name matching that works with partial names and spaces. No quotes needed—just type part of the codespace name. Useful for names with hyphens or when you don't want to type the full random suffix.
+The start command supports flexible name matching that works with partial names and spaces. No quotes needed—just type part of the codespace name. If multiple codespaces match your search, you'll see an interactive menu to select which one to start.
 
 **Connection Methods:**
 
@@ -232,7 +232,7 @@ spaceheater stop stunning lamp     # matches 'stunning-lamp-...'
 ```
 
 **Fuzzy Matching:**
-Like the start command, stop supports flexible name matching with partial names and spaces. No quotes needed.
+Like the start command, stop supports flexible name matching with partial names and spaces. No quotes needed. If multiple codespaces match your search, you'll see an interactive menu to select which one to stop.
 
 ### Delete a Codespace
 
@@ -246,7 +246,7 @@ spaceheater delete organic           # matches 'organic-sniffle-...'
 ```
 
 **Fuzzy Matching:**
-The delete command supports the same flexible name matching as start and stop. A confirmation prompt will ask you to confirm before deleting.
+The delete command supports the same flexible name matching as start and stop. If multiple codespaces match your search, you'll see an interactive menu to select which one to delete. A confirmation prompt will then ask you to confirm before deleting.
 
 **Safety:**
 Unlike the `clean` command which can delete multiple codespaces at once, `delete` targets a single codespace and always asks for confirmation before proceeding.
