@@ -223,9 +223,33 @@ spaceheater autostart  # Now uses SSH by default
 # Stop the most recently used codespace
 spaceheater stop
 
-# Stop a specific codespace
+# Stop by exact name (no quotes needed)
 spaceheater stop fuzzy-umbrella-9wjgq56x74hxpp7
+
+# Stop by partial name with fuzzy matching
+spaceheater stop fuzzy umbrella    # matches 'fuzzy-umbrella-9wjgq56x74hxpp7'
+spaceheater stop stunning lamp     # matches 'stunning-lamp-...'
 ```
+
+**Fuzzy Matching:**
+Like the start command, stop supports flexible name matching with partial names and spaces. No quotes needed.
+
+### Delete a Codespace
+
+```bash
+# Delete by exact name (with confirmation prompt)
+spaceheater delete fuzzy-umbrella-9wjgq56x74hxpp7
+
+# Delete by partial name with fuzzy matching
+spaceheater delete fuzzy umbrella    # matches 'fuzzy-umbrella-9wjgq56x74hxpp7'
+spaceheater delete organic           # matches 'organic-sniffle-...'
+```
+
+**Fuzzy Matching:**
+The delete command supports the same flexible name matching as start and stop. A confirmation prompt will ask you to confirm before deleting.
+
+**Safety:**
+Unlike the `clean` command which can delete multiple codespaces at once, `delete` targets a single codespace and always asks for confirmation before proceeding.
 
 ### Clean Up Old Codespaces
 
@@ -254,7 +278,7 @@ Configure via environment variables (all optional):
 | `SPACEHEATER_REPO` | Auto-detect from git | Repository (owner/repo format) |
 | `SPACEHEATER_BRANCH` | Auto-detect from repo | Branch to create from |
 | `SPACEHEATER_CONNECT` | browser | Connection method (browser, ssh, or code) |
-| `SPACEHEATER_MACHINE` | Respect devcontainer | Machine type (basicLinux, basicLinux32gb, standardLinux, standardLinux32gb, premiumLinux, premiumLinux32gb, largePremiumLinux) |
+| `SPACEHEATER_MACHINE` | Auto-detect from API | Machine type (basicLinux, basicLinux32gb, standardLinux, standardLinux32gb, premiumLinux, premiumLinux32gb, largePremiumLinux) |
 | `SPACEHEATER_RETENTION` | GitHub default | How long before auto-deletion (e.g., 168h, 720h) |
 | `SPACEHEATER_IDLE_TIMEOUT` | GitHub/org default | Idle timeout before auto-stop (e.g., 30m, 1h) |
 | `SPACEHEATER_DEVCONTAINER_PATH` | Auto-detect | Path to devcontainer.json |
@@ -266,12 +290,14 @@ Configure via environment variables (all optional):
 
 ### Configuration Philosophy
 
-Spaceheater respects your repository's devcontainer configuration and GitHub defaults by default. This prevents unexpected costs and configuration mismatches.
+Spaceheater automatically detects sensible defaults from your repository and GitHub's API, while allowing overrides when needed.
 
-- **No env vars set** → Uses devcontainer `hostRequirements` or GitHub defaults (typically `basicLinux`)
-- **Env vars set** → Overrides defaults with your specified values
+**Machine Type Auto-Detection:**
+- **No `SPACEHEATER_MACHINE` set** → Queries GitHub API for available machine types and uses the first one (respects devcontainer `hostRequirements`)
+- **`SPACEHEATER_MACHINE` set** → Overrides with your specified value
+- **Detection fails** → Shows clear error message with instructions to set manually
 
-This means spaceheater won't accidentally create expensive machines unless you explicitly request them.
+This ensures codespaces are created with appropriate resources without requiring manual configuration, while preventing unexpected costs from expensive machine types.
 
 ### Example Configurations
 
