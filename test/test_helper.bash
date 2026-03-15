@@ -92,6 +92,9 @@ setup() {
     export MOCK_BIN_DIR="${TEST_TEMP_DIR}/bin"
     mkdir -p "$MOCK_BIN_DIR"
 
+    # Create fixtures directory if it doesn't exist
+    mkdir -p "$FIXTURES"
+
     # Generate dynamic fixture with current relative dates
     generate_codespaces_fixture "${FIXTURES}/codespaces.json"
 
@@ -164,6 +167,18 @@ case "$*" in
     # Explicit match for repo info (without --jq)
     "api /repos/testorg/testrepo")
         echo '{"id": 12345678, "default_branch": "main", "full_name": "testorg/testrepo"}'
+        exit 0
+        ;;
+
+    # Explicit match for machines API with --jq (used by get_default_machine)
+    "api /repos/testorg/testrepo/codespaces/machines --jq .machines[0].name")
+        echo "basicLinux32gb"
+        exit 0
+        ;;
+
+    # Explicit match for machines API (without --jq)
+    "api /repos/testorg/testrepo/codespaces/machines")
+        echo '{"machines":[{"name":"basicLinux32gb","display_name":"2 cores, 8 GB RAM","cpus":2}],"total_count":1}'
         exit 0
         ;;
 
