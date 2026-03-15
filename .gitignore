@@ -42,6 +42,7 @@ Temporary Items
 spaceheater-test-*/
 test/tmp/
 test/*.log
+test/fixtures/codespaces.json
 gh-calls.log
 .bats/
 *.bats.log
