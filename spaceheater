@@ -123,6 +123,30 @@ validate_machine_type() {
   fi
 }
 
+# Get default machine type for the repository
+get_default_machine() {
+  local default_machine=""
+
+  # Try to get the first available machine type from the API
+  default_machine=$(gh api "/repos/$REPO/codespaces/machines" --jq '.machines[0].name' 2>/dev/null)
+
+  if [ -z "$default_machine" ]; then
+    # API call failed or no machines available
+    # Check if it's an API error vs no machines
+    local api_response=$(gh api "/repos/$REPO/codespaces/machines" 2>&1)
+    if [[ "$api_response" == *"machines"* ]]; then
+      # API worked but no machines available
+      error "No machine types available for repository $REPO.\n\nPlease contact your repository administrator to enable Codespaces."
+    else
+      # API call failed - can't determine available machines
+      error "Unable to detect available machine types for $REPO.\n\nPlease set SPACEHEATER_MACHINE environment variable explicitly.\nExample: export SPACEHEATER_MACHINE=basicLinux32gb\n\nCommon machine types:\n  - basicLinux32gb (2 cores, 8 GB RAM)\n  - standardLinux (4 cores, 16 GB RAM)\n  - premiumLinux (8 cores, 32 GB RAM)"
+    fi
+  fi
+
+  debug "Detected default machine type: $default_machine"
+  echo "$default_machine"
+}
+
 # Auto-detect repository from current directory
 detect_repo() {
   # First check environment variable
@@ -302,12 +326,16 @@ cmd_create() {
 
   info "Creating $count codespace(s) for $REPO (branch: $BRANCH)..."
 
-  # Show what configuration will be used
-  if [ -n "$MACHINE" ]; then
-    info "  Machine type: $MACHINE (user-specified)"
-    validate_machine_type "$MACHINE"
+  # Determine machine type to use
+  local effective_machine="$MACHINE"
+  if [ -z "$effective_machine" ]; then
+    # No machine specified, try to detect default
+    info "  Detecting default machine type..."
+    effective_machine=$(get_default_machine)
+    info "  Machine type: $effective_machine (auto-detected)"
   else
-    info "  Machine type: <from devcontainer hostRequirements or GitHub default>"
+    info "  Machine type: $effective_machine (user-specified)"
+    validate_machine_type "$effective_machine"
   fi
 
   if [ -n "$RETENTION" ]; then
@@ -334,19 +362,15 @@ cmd_create() {
   for i in $(seq 1 "$count"); do
     info "[$i/$count] Creating codespace..."
 
-    debug "Creating codespace with: repo=$REPO branch=$BRANCH machine=${MACHINE:-<default>}"
+    debug "Creating codespace with: repo=$REPO branch=$BRANCH machine=$effective_machine"
 
     # Build args array with only explicitly set values
     local create_args=(
       --repo "$REPO"
       --branch "$BRANCH"
       --default-permissions
+      --machine "$effective_machine"  # Always pass machine to prevent interactive prompts
     )
-
-    # Add optional configurations ONLY if user explicitly set them
-    if [ -n "$MACHINE" ]; then
-      create_args+=(--machine "$MACHINE")
-    fi
 
     if [ -n "$RETENTION" ]; then
       create_args+=(--retention-period "$RETENTION")
@@ -692,18 +716,53 @@ cmd_autostart() {
 
 cmd_stop() {
   init_repo_config
-  local codespace_name="${1:-}"
+  # Join all arguments to support names with spaces without escaping
+  # e.g., "spaceheater stop stunning lamp" works without quotes
+  local search_term="${*}"
 
-  if [ -z "$codespace_name" ]; then
+  if [ -z "$search_term" ]; then
     info "Finding running codespace to stop..."
 
     # Get the most recently used running codespace
-    codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+    local codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
       --jq '.codespaces | map(select(.state == "Available")) |
              sort_by(.last_used_at // .created_at) | reverse | .[0].name // empty')
 
     if [ -z "$codespace_name" ]; then
       error "No running codespaces found"
+    fi
+  else
+    # Search for matching codespace (similar to start command)
+    debug "Searching for codespace matching: $search_term"
+
+    # Fetch all codespaces with their names and display names
+    local matches=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+      --jq '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"' | \
+      grep -i "$search_term" || true)
+
+    if [ -z "$matches" ]; then
+      error "No codespace found matching: $search_term"
+    fi
+
+    # Count matches
+    local match_count=$(echo "$matches" | wc -l | tr -d ' ')
+
+    if [ "$match_count" -eq 1 ]; then
+      # Single match - use it
+      codespace_name=$(echo "$matches" | cut -f1)
+      local display_name=$(echo "$matches" | cut -f2)
+      debug "Found match: $display_name"
+    else
+      # Multiple matches - show them and pick first
+      warn "Multiple codespaces match '$search_term':"
+      echo "$matches" | while IFS=$'\t' read -r name display; do
+        echo "  - $display" >&2
+      done
+      echo >&2
+
+      codespace_name=$(echo "$matches" | head -n1 | cut -f1)
+      local display_name=$(echo "$matches" | head -n1 | cut -f2)
+      info "Using first match: $display_name"
     fi
   fi
 
@@ -770,15 +829,66 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 
 cmd_delete() {
   init_repo_config
-  local codespace_name="${1:-}"
+  # Join all arguments to support names with spaces without escaping
+  # e.g., "spaceheater delete stunning lamp" works without quotes
+  local search_term="${*}"
 
-  if [ -z "$codespace_name" ]; then
+  if [ -z "$search_term" ]; then
     error "Usage: spaceheater delete <codespace-name>"
   fi
 
-  info "Deleting codespace: $codespace_name"
-  gh codespace delete -c "$codespace_name" --force
-  success "Deleted!"
+  # Search for matching codespace (similar to start/stop commands)
+  debug "Searching for codespace matching: $search_term"
+
+  # Fetch all codespaces with their names and display names
+  local matches=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
+    --jq '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"' | \
+    grep -i "$search_term" || true)
+
+  if [ -z "$matches" ]; then
+    error "No codespace found matching: $search_term"
+  fi
+
+  # Count matches
+  local match_count=$(echo "$matches" | wc -l | tr -d ' ')
+
+  local codespace_name=""
+  local display_name=""
+
+  if [ "$match_count" -eq 1 ]; then
+    # Single match - use it
+    codespace_name=$(echo "$matches" | cut -f1)
+    display_name=$(echo "$matches" | cut -f2)
+    debug "Found match: $display_name"
+  else
+    # Multiple matches - show them and confirm
+    warn "Multiple codespaces match '$search_term':"
+    echo "$matches" | while IFS=$'\t' read -r name display; do
+      echo "  - $display" >&2
+    done
+    echo >&2
+
+    codespace_name=$(echo "$matches" | head -n1 | cut -f1)
+    display_name=$(echo "$matches" | head -n1 | cut -f2)
+    info "Using first match: $display_name"
+  fi
+
+  info "Deleting codespace: $display_name"
+
+  # Add confirmation for safety
+  read -p "Are you sure you want to delete '$display_name'? [y/N] " -n 1 -r
+  echo
+
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    info "Cancelled."
+    return 0
+  fi
+
+  if gh codespace delete -c "$codespace_name" --force; then
+    success "Deleted!"
+  else
+    error "Failed to delete codespace"
+  fi
 }
 
 cmd_config() {
@@ -935,13 +1045,13 @@ main() {
       cmd_list "$@"
       ;;
     start)
-      cmd_start "${1:-}"
+      cmd_start "$@"
       ;;
     autostart)
       cmd_autostart
       ;;
     stop)
-      cmd_stop "${1:-}"
+      cmd_stop "$@"
       ;;
     clean)
       cmd_clean "$@"
