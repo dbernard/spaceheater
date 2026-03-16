@@ -729,17 +729,17 @@ auto_select_codespace() {
 
   # First try: Clean HOT codespaces (Available - immediately ready, no startup needed)
   codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available" and
-      .git_status.has_uncommitted_changes == false and
-      .git_status.has_unpushed_changes == false and
-      .git_status.ahead == 0)) |
+      (.git_status.has_uncommitted_changes // false) == false and
+      (.git_status.has_unpushed_changes // false) == false and
+      (.git_status.ahead // 0) == 0)) |
       sort_by(.created_at) | reverse | .[0].name // empty')
 
   if [ -z "$codespace_name" ]; then
     # Second try: Clean WARM codespaces (Shutdown - fully built but needs restart)
     codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Shutdown" and
-        .git_status.has_uncommitted_changes == false and
-        .git_status.has_unpushed_changes == false and
-        .git_status.ahead == 0)) |
+        (.git_status.has_uncommitted_changes // false) == false and
+        (.git_status.has_unpushed_changes // false) == false and
+        (.git_status.ahead // 0) == 0)) |
         sort_by(.created_at) | reverse | .[0].name // empty')
   fi
 
