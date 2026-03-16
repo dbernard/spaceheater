@@ -60,7 +60,7 @@ if detect_unicode; then
   ICON_HOT="🔥"
   ICON_WARM="♨️"
   ICON_COLD="🧊"
-  ICON_HEATING=""
+  ICON_HEATING="⏳"
   ICON_CHECK="✓"
   ICON_CROSS="✗"
   ICON_CLEAN="✔"
@@ -87,7 +87,7 @@ else
   ICON_HOT="[*]"
   ICON_WARM="[~]"
   ICON_COLD="[-]"
-  ICON_HEATING=""
+  ICON_HEATING="[...]"
   ICON_CHECK="+"
   ICON_CROSS="x"
   ICON_CLEAN="+"
@@ -566,6 +566,7 @@ cmd_list() {
   # Arrays to hold categorized codespaces
   local -a hot_lines=()
   local -a warm_lines=()
+  local -a transitioning_lines=()
   local -a cold_lines=()
 
   # Collect and categorize codespaces
@@ -594,8 +595,8 @@ cmd_list() {
           category="COLD"
         fi
         ;;
-      Starting|Provisioning)
-        category="COLD"  # Group HEATING with COLD
+      Starting|Provisioning|ShuttingDown|Stopping)
+        category="TRANSITIONING"
         ;;
       *)
         category="COLD"
@@ -643,9 +644,20 @@ cmd_list() {
 
     local age=$(format_time_ago "$created_at")
 
-    # Format the line (with dimmed text for COLD)
+    # Format the line (with dimmed text for COLD, state info for TRANSITIONING)
     local line=""
-    if [ "$category" = "COLD" ]; then
+    if [ "$category" = "TRANSITIONING" ]; then
+      # For transitioning codespaces, show the state instead of git details
+      local state_display=""
+      case "$state" in
+        Starting) state_display="Starting up" ;;
+        Provisioning) state_display="Provisioning" ;;
+        ShuttingDown) state_display="Shutting down" ;;
+        Stopping) state_display="Stopping" ;;
+        *) state_display="$state" ;;
+      esac
+      line="${git_indicator}\t${display_name}\t${branch}\t[${state_display}]\t${DIM}(${age})${NC}"
+    elif [ "$category" = "COLD" ]; then
       line="${git_indicator}\t${DIM}${display_name}\t${branch}\t[${git_details}]\t(${age})${NC}"
     else
       line="${git_indicator}\t${display_name}\t${branch}\t[${git_details}]\t${DIM}(${age})${NC}"
@@ -658,6 +670,9 @@ cmd_list() {
         ;;
       WARM)
         warm_lines+=("$line")
+        ;;
+      TRANSITIONING)
+        transitioning_lines+=("$line")
         ;;
       COLD)
         cold_lines+=("$line")
@@ -686,6 +701,14 @@ cmd_list() {
   fi
   echo
 
+  # Display TRANSITIONING section (only if there are transitioning codespaces)
+  if [ ${#transitioning_lines[@]} -gt 0 ]; then
+    echo -e "${COLOR_HEATING}${ICON_HEATING} TRANSITIONING${NC}"
+    echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}"
+    printf '%b\n' "${transitioning_lines[@]}" | column -t -s $'\t'
+    echo
+  fi
+
   # Display COLD section
   echo -e "${COLOR_COLD}${ICON_COLD} COLD${NC}"
   echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}"
@@ -704,16 +727,16 @@ cmd_list() {
 auto_select_codespace() {
   local codespace_name=""
 
-  # First try: Clean shutdown codespaces (preferred - fully built and ready)
-  codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Shutdown" and
+  # First try: Clean HOT codespaces (Available - immediately ready, no startup needed)
+  codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available" and
       .git_status.has_uncommitted_changes == false and
       .git_status.has_unpushed_changes == false and
       .git_status.ahead == 0)) |
       sort_by(.created_at) | reverse | .[0].name // empty')
 
   if [ -z "$codespace_name" ]; then
-    # Second try: Clean available codespaces (still running but clean)
-    codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available" and
+    # Second try: Clean WARM codespaces (Shutdown - fully built but needs restart)
+    codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Shutdown" and
         .git_status.has_uncommitted_changes == false and
         .git_status.has_unpushed_changes == false and
         .git_status.ahead == 0)) |
@@ -807,6 +830,45 @@ cmd_stop() {
   # Join all arguments to support names with spaces without escaping
   # e.g., "spaceheater stop stunning lamp" works without quotes
   local search_term="${*}"
+
+  # Special case: stop all running codespaces
+  if [ "$search_term" = "all" ]; then
+    info "Finding all running codespaces to stop..."
+
+    # Get all running codespaces
+    local running_codespaces=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) | .[] | "\(.name)\t\(.display_name // .name)"')
+
+    if [ -z "$running_codespaces" ]; then
+      info "No running codespaces found"
+      return 0
+    fi
+
+    # Count how many we're stopping
+    local count=$(echo "$running_codespaces" | wc -l | tr -d ' ')
+    info "Found $count running codespace(s)"
+    echo
+
+    # Stop each codespace
+    local stopped=0
+    local failed=0
+    while IFS=$'\t' read -r name display_name; do
+      info "Stopping: $display_name"
+      if gh codespace stop -c "$name" 2>/dev/null; then
+        success "  ${ICON_CHECK} Stopped"
+        stopped=$((stopped + 1))
+      else
+        warn "  ${ICON_CROSS} Failed to stop"
+        failed=$((failed + 1))
+      fi
+    done <<< "$running_codespaces"
+
+    echo
+    success "Stopped $stopped codespace(s)"
+    if [ "$failed" -gt 0 ]; then
+      warn "Failed: $failed"
+    fi
+    return 0
+  fi
 
   if [ -z "$search_term" ]; then
     info "Finding running codespace to stop..."
@@ -1013,7 +1075,7 @@ cmd_help() {
   echo -e "  ${CYAN}list${NC}, ${CYAN}ls${NC}           List all codespaces grouped by temperature (HOT/WARM/COLD)"
   echo -e "  ${CYAN}start [name]${NC}       Start a codespace (supports fuzzy matching and spaces without quotes)"
   echo -e "  ${CYAN}autostart${NC}          Auto-select and start a clean codespace"
-  echo -e "  ${CYAN}stop [name]${NC}        Stop a running codespace (supports fuzzy matching)"
+  echo -e "  ${CYAN}stop [name|all]${NC}    Stop a running codespace or all running codespaces"
   echo -e "  ${CYAN}clean [days]${NC}       Delete codespaces older than N days (default: 7)"
   echo -e "  ${CYAN}delete <name>${NC}      Delete a specific codespace (supports fuzzy matching)"
   echo -e "  ${CYAN}config${NC}             Show current configuration"
@@ -1037,6 +1099,9 @@ cmd_help() {
   echo -e "  ${DIM}# Start codespace by partial name (fuzzy match)${NC}"
   echo -e "  ${GREEN}spaceheater start probable space${NC}   ${DIM}# matches 'probable space journey'${NC}"
   echo ""
+  echo -e "  ${DIM}# Stop all running codespaces${NC}"
+  echo -e "  ${GREEN}spaceheater stop all${NC}"
+  echo ""
   echo -e "  ${DIM}# Clean codespaces older than 30 days${NC}"
   echo -e "  ${GREEN}spaceheater clean 30${NC}"
 
@@ -1053,6 +1118,7 @@ cmd_help() {
   echo -e "  Codespaces are categorized by their readiness:"
   echo -e "  ${RED}🔥 HOT${NC}  - Running codespaces (immediately available)"
   echo -e "  ${YELLOW}♨️  WARM${NC} - Shutdown but clean & recent (≤3 days) - quick to restart"
+  echo -e "  ${YELLOW}⏳ TRANSITIONING${NC} - Starting up or shutting down"
   echo -e "  ${BLUE}🧊 COLD${NC} - Old or dirty codespaces - need maintenance first"
   echo ""
   echo -e "  The ${CYAN}list${NC} command groups codespaces by temperature, helping you"
