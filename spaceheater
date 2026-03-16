@@ -16,12 +16,21 @@
 
 set -euo pipefail
 
+# ============================================================================
+# SPACEHEATER CONFIGURATION
+# ============================================================================
+
 VERSION="1.0.0"
 
 # Cache for repository ID to avoid repeated API calls
 CACHED_REPO_ID=""
 
-# Terminal capability detection
+# ============================================================================
+# TERMINAL CAPABILITIES & UI SETUP
+# ============================================================================
+
+# --- Terminal Capability Detection ---
+
 detect_unicode() {
   # Check NO_COLOR first
   if [ "${NO_COLOR:-}" != "" ]; then
@@ -37,6 +46,8 @@ detect_unicode() {
   fi
   return 1
 }
+
+# --- Icon Configuration ---
 
 # Icon system with Unicode/ASCII fallbacks
 if detect_unicode; then
@@ -95,6 +106,49 @@ else
   ICON_THERMOMETER="[TEMP]"
 fi
 
+# --- Color Configuration ---
+
+# Enhanced color palette with NO_COLOR support
+if [ "${NO_COLOR:-}" != "" ]; then
+  # No colors when NO_COLOR is set
+  RED=""
+  GREEN=""
+  YELLOW=""
+  BLUE=""
+  CYAN=""
+  MAGENTA=""
+  DIM=""
+  BOLD=""
+  NC=""
+  COLOR_HOT=""
+  COLOR_WARM=""
+  COLOR_COLD=""
+  COLOR_HEATING=""
+else
+  # Basic color definitions
+  RED='\033[0;31m'      # Error, dirty state
+  GREEN='\033[0;32m'    # Success, clean state
+  YELLOW='\033[1;33m'   # Warning
+  BLUE='\033[1;34m'     # Info
+  CYAN='\033[0;36m'     # Secondary info
+  MAGENTA='\033[0;35m'  # Special emphasis
+  DIM='\033[2m'         # De-emphasized text
+  BOLD='\033[1m'        # Bold text
+  NC='\033[0m'          # No Color/Reset
+
+  # Temperature-based colors for codespace states
+  # Check for 256-color support
+  if [[ "${TERM:-}" == *"256color"* ]] || [[ "${COLORTERM:-}" == "truecolor" ]]; then
+    COLOR_HOT='\033[38;5;202m'     # Orange-red (hot metal)
+    COLOR_WARM='\033[38;5;208m'    # Orange (warm coals)
+  else
+    COLOR_HOT='\033[1;31m'         # Bright red fallback
+    COLOR_WARM='\033[0;33m'        # Dark yellow fallback
+  fi
+  COLOR_COLD='\033[1;34m'          # Bright blue (cold)
+  COLOR_HEATING='\033[1;33m'       # Bright yellow (actively warming)
+fi
+
 # Get repository ID with caching
 get_repo_id() {
   if [ -z "$CACHED_REPO_ID" ]; then
@@ -123,17 +177,21 @@ validate_machine_type() {
   fi
 }
 
+# ============================================================================
+# REPOSITORY CONFIGURATION
+# ============================================================================
+
 # Get default machine type for the repository
 get_default_machine() {
   local default_machine=""
 
   # Try to get the first available machine type from the API
-  default_machine=$(gh api "/repos/$REPO/codespaces/machines" --jq '.machines[0].name' 2>/dev/null)
+  default_machine=$(get_available_machines --jq '.machines[0].name' 2>/dev/null)
 
   if [ -z "$default_machine" ]; then
     # API call failed or no machines available
     # Check if it's an API error vs no machines
-    local api_response=$(gh api "/repos/$REPO/codespaces/machines" 2>&1)
+    local api_response=$(get_available_machines 2>&1)
     if [[ "$api_response" == *"machines"* ]]; then
       # API worked but no machines available
       error "No machine types available for repository $REPO.\n\nPlease contact your repository administrator to enable Codespaces."
@@ -219,46 +277,9 @@ CONNECT_METHOD="${SPACEHEATER_CONNECT:-browser}"
 # Debug mode
 DEBUG="${SPACEHEATER_DEBUG:-false}"
 
-# Enhanced color palette with NO_COLOR support
-if [ "${NO_COLOR:-}" != "" ]; then
-  # No colors when NO_COLOR is set
-  RED=""
-  GREEN=""
-  YELLOW=""
-  BLUE=""
-  CYAN=""
-  MAGENTA=""
-  DIM=""
-  BOLD=""
-  NC=""
-  COLOR_HOT=""
-  COLOR_WARM=""
-  COLOR_COLD=""
-  COLOR_HEATING=""
-else
-  # Color definitions
-  RED='\033[0;31m'      # Error, dirty state
-  GREEN='\033[0;32m'    # Success, clean state
-  YELLOW='\033[1;33m'   # Warning
-  BLUE='\033[1;34m'     # Info
-  CYAN='\033[0;36m'     # Secondary info
-  MAGENTA='\033[0;35m'  # Special emphasis
-  DIM='\033[2m'         # De-emphasized text
-  BOLD='\033[1m'        # Bold text
-  NC='\033[0m'          # No Color/Reset
-
-  # Temperature-based colors for codespace states
-  # Check for 256-color support
-  if [[ "${TERM:-}" == *"256color"* ]] || [[ "${COLORTERM:-}" == "truecolor" ]]; then
-    COLOR_HOT='\033[38;5;202m'     # Orange-red (hot metal)
-    COLOR_WARM='\033[38;5;208m'    # Orange (warm coals)
-  else
-    COLOR_HOT='\033[1;31m'         # Bright red fallback
-    COLOR_WARM='\033[0;33m'        # Dark yellow fallback
-  fi
-  COLOR_COLD='\033[1;34m'          # Bright blue (cold)
-  COLOR_HEATING='\033[1;33m'       # Bright yellow (actively warming)
-fi
+# ============================================================================
+# MESSAGING FUNCTIONS
+# ============================================================================
 
 error() {
   echo -e "${RED}${ICON_ERROR} Error: $*${NC}" >&2
@@ -282,6 +303,113 @@ debug() {
     echo -e "${BLUE}[DEBUG]${NC} $*" >&2
   fi
 }
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+# Date calculation helper functions
+calculate_age_days() {
+  local created_at="$1"
+  python3 -c "
+from datetime import datetime, timezone
+created = datetime.fromisoformat('$created_at'.replace('Z', '+00:00'))
+now = datetime.now(timezone.utc)
+delta = now - created
+print(delta.days)
+" 2>/dev/null || echo "999"
+}
+
+format_time_ago() {
+  local created_at="$1"
+  python3 -c "
+from datetime import datetime, timezone
+created = datetime.fromisoformat('$created_at'.replace('Z', '+00:00'))
+now = datetime.now(timezone.utc)
+delta = now - created
+days = delta.days
+hours = delta.seconds // 3600
+if days > 0:
+    print(f'{days}d {hours}h ago')
+else:
+    print(f'{hours}h ago')
+" 2>/dev/null || echo ""
+}
+
+# GitHub API wrapper functions
+get_all_codespaces() {
+  gh api "/user/codespaces?repository_id=$(get_repo_id)" "$@"
+}
+
+get_codespaces_with_jq() {
+  local jq_filter="$1"
+  get_all_codespaces --jq "$jq_filter"
+}
+
+get_available_machines() {
+  gh api "/repos/$REPO/codespaces/machines" "$@"
+}
+
+find_codespace_by_pattern() {
+  local search_term="$1"
+  get_codespaces_with_jq '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"' | \
+    grep -i "$search_term" || true
+}
+
+# Interactive selection helper
+# Returns the selected codespace name via echo
+# Usage: codespace_name=$(select_codespace_interactive "$matches" "$search_term")
+select_codespace_interactive() {
+  local matches="$1"
+  local search_term="$2"
+  local codespace_name=""
+
+  # Check if matches is empty
+  if [ -z "$matches" ]; then
+    error "No codespace found matching: $search_term"
+  fi
+
+  # Count matches
+  local match_count=$(echo "$matches" | wc -l | tr -d ' ')
+
+  if [ "$match_count" -eq 1 ]; then
+    # Single match - use it
+    codespace_name=$(echo "$matches" | cut -f1)
+    local display_name=$(echo "$matches" | cut -f2)
+    debug "Found match: $display_name"
+  else
+    # Multiple matches - let user select interactively
+    info "Multiple codespaces match '$search_term':"
+    echo >&2
+
+    # Build arrays for selection
+    local -a display_names=()
+    local -a codespace_names=()
+    while IFS=$'\t' read -r name display; do
+      codespace_names+=("$name")
+      display_names+=("$display")
+    done <<< "$matches"
+
+    # Interactive selection
+    PS3="Select codespace number: "
+    select display_name in "${display_names[@]}"; do
+      if [ -n "$display_name" ]; then
+        local index=$((REPLY - 1))
+        codespace_name="${codespace_names[$index]}"
+        debug "Selected: $display_name"
+        break
+      else
+        echo "Invalid selection. Please try again." >&2
+      fi
+    done
+  fi
+
+  echo "$codespace_name"
+}
+
+# ============================================================================
+# DEPENDENCY CHECKS & INITIALIZATION
+# ============================================================================
 
 check_dependencies() {
   # Check for GitHub CLI
@@ -309,6 +437,10 @@ check_dependencies() {
     error "Not authenticated with GitHub. Run: gh auth login"
   fi
 }
+
+# ============================================================================
+# COMMAND IMPLEMENTATIONS
+# ============================================================================
 
 cmd_create() {
   init_repo_config
@@ -439,13 +571,7 @@ cmd_list() {
   # Collect and categorize codespaces
   while IFS=$'\t' read -r state display_name branch has_uncommitted has_unpushed ahead behind name created_at; do
     # Calculate age in days for WARM/COLD determination
-    local age_days=$(python3 -c "
-from datetime import datetime, timezone
-created = datetime.fromisoformat('$created_at'.replace('Z', '+00:00'))
-now = datetime.now(timezone.utc)
-delta = now - created
-print(delta.days)
-" 2>/dev/null || echo "999")
+    local age_days=$(calculate_age_days "$created_at")
 
     # Determine git cleanliness (clean = no uncommitted, no ahead, optionally behind is OK)
     local is_git_clean=false
@@ -515,18 +641,7 @@ print(delta.days)
       git_details="clean"
     fi
 
-    local age=$(python3 -c "
-from datetime import datetime, timezone
-created = datetime.fromisoformat('$created_at'.replace('Z', '+00:00'))
-now = datetime.now(timezone.utc)
-delta = now - created
-days = delta.days
-hours = delta.seconds // 3600
-if days > 0:
-    print(f'{days}d {hours}h ago')
-else:
-    print(f'{hours}h ago')
-" 2>/dev/null || echo "")
+    local age=$(format_time_ago "$created_at")
 
     # Format the line (with dimmed text for COLD)
     local line=""
@@ -548,8 +663,7 @@ else:
         cold_lines+=("$line")
         ;;
     esac
-  done < <(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-    --jq '.codespaces | sort_by(.created_at) | reverse | .[] |
+  done < <(get_codespaces_with_jq '.codespaces | sort_by(.created_at) | reverse | .[] |
       "\(.state)\t\(.display_name // .name)\t\(.git_status.ref // "unknown")\t\(.git_status.has_uncommitted_changes // false)\t\(.git_status.has_unpushed_changes // false)\t\(.git_status.ahead // 0)\t\(.git_status.behind // 0)\t\(.name)\t\(.created_at)"')
 
   # Display HOT section
@@ -591,8 +705,7 @@ auto_select_codespace() {
   local codespace_name=""
 
   # First try: Clean shutdown codespaces (preferred - fully built and ready)
-  codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-    --jq '.codespaces | map(select(.state == "Shutdown" and
+  codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Shutdown" and
       .git_status.has_uncommitted_changes == false and
       .git_status.has_unpushed_changes == false and
       .git_status.ahead == 0)) |
@@ -600,8 +713,7 @@ auto_select_codespace() {
 
   if [ -z "$codespace_name" ]; then
     # Second try: Clean available codespaces (still running but clean)
-    codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-      --jq '.codespaces | map(select(.state == "Available" and
+    codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available" and
         .git_status.has_uncommitted_changes == false and
         .git_status.has_unpushed_changes == false and
         .git_status.ahead == 0)) |
@@ -630,48 +742,10 @@ cmd_start() {
     debug "Searching for codespace matching: $search_term"
 
     # Fetch all codespaces with their names and display names
-    local matches=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-      --jq '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"' | \
-      grep -i "$search_term" || true)
+    local matches=$(find_codespace_by_pattern "$search_term")
 
-    if [ -z "$matches" ]; then
-      error "No codespace found matching: $search_term"
-    fi
-
-    # Count matches
-    local match_count=$(echo "$matches" | wc -l | tr -d ' ')
-
-    if [ "$match_count" -eq 1 ]; then
-      # Single match - use it
-      codespace_name=$(echo "$matches" | cut -f1)
-      local display_name=$(echo "$matches" | cut -f2)
-      debug "Found match: $display_name"
-    else
-      # Multiple matches - let user select interactively
-      info "Multiple codespaces match '$search_term':"
-      echo >&2
-
-      # Build arrays for selection
-      local -a display_names=()
-      local -a codespace_names=()
-      while IFS=$'\t' read -r name display; do
-        codespace_names+=("$name")
-        display_names+=("$display")
-      done <<< "$matches"
-
-      # Interactive selection
-      PS3="Select codespace number: "
-      select display_name in "${display_names[@]}"; do
-        if [ -n "$display_name" ]; then
-          local index=$((REPLY - 1))
-          codespace_name="${codespace_names[$index]}"
-          debug "Selected: $display_name"
-          break
-        else
-          echo "Invalid selection. Please try again." >&2
-        fi
-      done
-    fi
+    # Use interactive selection helper
+    codespace_name=$(select_codespace_interactive "$matches" "$search_term")
 
     cmd_args+=(-c "$codespace_name")
   else
@@ -738,8 +812,7 @@ cmd_stop() {
     info "Finding running codespace to stop..."
 
     # Get the most recently used running codespace
-    local codespace_name=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-      --jq '.codespaces | map(select(.state == "Available")) |
+    local codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) |
              sort_by(.last_used_at // .created_at) | reverse | .[0].name // empty')
 
     if [ -z "$codespace_name" ]; then
@@ -750,48 +823,10 @@ cmd_stop() {
     debug "Searching for codespace matching: $search_term"
 
     # Fetch all codespaces with their names and display names
-    local matches=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-      --jq '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"' | \
-      grep -i "$search_term" || true)
+    local matches=$(find_codespace_by_pattern "$search_term")
 
-    if [ -z "$matches" ]; then
-      error "No codespace found matching: $search_term"
-    fi
-
-    # Count matches
-    local match_count=$(echo "$matches" | wc -l | tr -d ' ')
-
-    if [ "$match_count" -eq 1 ]; then
-      # Single match - use it
-      codespace_name=$(echo "$matches" | cut -f1)
-      local display_name=$(echo "$matches" | cut -f2)
-      debug "Found match: $display_name"
-    else
-      # Multiple matches - let user select interactively
-      info "Multiple codespaces match '$search_term':"
-      echo >&2
-
-      # Build arrays for selection
-      local -a display_names=()
-      local -a codespace_names=()
-      while IFS=$'\t' read -r name display; do
-        codespace_names+=("$name")
-        display_names+=("$display")
-      done <<< "$matches"
-
-      # Interactive selection
-      PS3="Select codespace number: "
-      select display_name in "${display_names[@]}"; do
-        if [ -n "$display_name" ]; then
-          local index=$((REPLY - 1))
-          codespace_name="${codespace_names[$index]}"
-          debug "Selected: $display_name"
-          break
-        else
-          echo "Invalid selection. Please try again." >&2
-        fi
-      done
-    fi
+    # Use interactive selection helper
+    codespace_name=$(select_codespace_interactive "$matches" "$search_term")
   fi
 
   local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName 2>/dev/null)"
@@ -820,7 +855,7 @@ cutoff = datetime.now(timezone.utc) - timedelta(days=$days)
 print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 ")
 
-  local to_delete=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" | jq -r --arg cutoff "$cutoff_date" '
+  local to_delete=$(get_all_codespaces | jq -r --arg cutoff "$cutoff_date" '
       .codespaces |
       map(select(.created_at < $cutoff)) |
       .[] | "\(.name)\t\(.display_name // .name)\t\(.created_at)"')
@@ -869,51 +904,13 @@ cmd_delete() {
   debug "Searching for codespace matching: $search_term"
 
   # Fetch all codespaces with their names and display names
-  local matches=$(gh api "/user/codespaces?repository_id=$(get_repo_id)" \
-    --jq '.codespaces | .[] | "\(.name)\t\(.display_name // .name)"' | \
-    grep -i "$search_term" || true)
+  local matches=$(find_codespace_by_pattern "$search_term")
 
-  if [ -z "$matches" ]; then
-    error "No codespace found matching: $search_term"
-  fi
+  # Use interactive selection helper
+  local codespace_name=$(select_codespace_interactive "$matches" "$search_term")
 
-  # Count matches
-  local match_count=$(echo "$matches" | wc -l | tr -d ' ')
-
-  local codespace_name=""
-  local display_name=""
-
-  if [ "$match_count" -eq 1 ]; then
-    # Single match - use it
-    codespace_name=$(echo "$matches" | cut -f1)
-    display_name=$(echo "$matches" | cut -f2)
-    debug "Found match: $display_name"
-  else
-    # Multiple matches - let user select interactively
-    info "Multiple codespaces match '$search_term':"
-    echo >&2
-
-    # Build arrays for selection
-    local -a display_names=()
-    local -a codespace_names=()
-    while IFS=$'\t' read -r name display; do
-      codespace_names+=("$name")
-      display_names+=("$display")
-    done <<< "$matches"
-
-    # Interactive selection
-    PS3="Select codespace number: "
-    select display_name in "${display_names[@]}"; do
-      if [ -n "$display_name" ]; then
-        local index=$((REPLY - 1))
-        codespace_name="${codespace_names[$index]}"
-        debug "Selected: $display_name"
-        break
-      else
-        echo "Invalid selection. Please try again." >&2
-      fi
-    done
-  fi
+  # Get display name for the selected codespace
+  local display_name=$(echo "$matches" | grep "^$codespace_name" | cut -f2)
 
   info "Deleting codespace: $display_name"
 
@@ -1073,6 +1070,10 @@ cmd_help() {
 }
 
 # Main
+# ============================================================================
+# MAIN ENTRY POINT & COMMAND DISPATCHER
+# ============================================================================
+
 main() {
   check_dependencies
 
