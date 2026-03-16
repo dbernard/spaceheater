@@ -175,6 +175,20 @@ EOF
     assert_gh_called_with "codespace stop"
 }
 
+@test "stop all command stops all running codespaces" {
+    create_mock_gh
+    create_mock_jq
+
+    run "$SPACEHEATER" stop all
+    [ "$status" -eq 0 ]
+
+    # Should find and stop running codespaces
+    [[ "$output" =~ "running codespace" ]] || [[ "$output" =~ "Stopped" ]]
+
+    # Should call gh codespace stop for each running codespace
+    assert_gh_called_with "codespace stop"
+}
+
 @test "autostart selects appropriate codespace" {
     create_mock_gh
     create_mock_jq
@@ -183,8 +197,8 @@ EOF
     [ "$status" -eq 0 ]
 
     # Should select and start a codespace
-    # With our fixture, should prefer warm-space-002 (shutdown but clean)
-    [[ "$output" =~ "warm-space-002" ]] || [[ "$output" =~ "Starting" ]]
+    # With our fixture, should prefer hot-space-001 (Available and clean) over warm-space-002
+    [[ "$output" =~ "hot-space-001" ]] || [[ "$output" =~ "Starting" ]]
 }
 
 # =============================================================================
