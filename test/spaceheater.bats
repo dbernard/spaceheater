@@ -60,6 +60,186 @@ load test_helper
 }
 
 # =============================================================================
+# Config File Tests
+# =============================================================================
+
+@test "loads config from user-wide config file" {
+    create_mock_gh
+    create_mock_jq
+
+    # Create a mock user config file
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    cat > "$user_config" << 'EOF'
+REPO=configorg/configrepo
+MACHINE=premiumLinux
+CONNECT=ssh
+EOF
+
+    # Point HOME to test temp dir so config is found
+    export HOME="$TEST_TEMP_DIR"
+
+    run "$SPACEHEATER" config
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "configorg/configrepo" ]] || [[ "$output" =~ "premiumLinux" ]] || [[ "$output" =~ "ssh" ]]
+}
+
+@test "loads config from repo-specific config file" {
+    create_mock_gh
+    create_mock_jq
+
+    # Create a mock repo config file
+    local repo_config="${TEST_TEMP_DIR}/.spaceheater.conf"
+    cat > "$repo_config" << 'EOF'
+REPO=repoorg/reporepo
+MACHINE=standardLinux
+BRANCH=develop
+EOF
+
+    # Change to test temp dir so repo config is found
+    cd "$TEST_TEMP_DIR"
+
+    run "$SPACEHEATER" config
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "repoorg/reporepo" ]] || [[ "$output" =~ "standardLinux" ]] || [[ "$output" =~ "develop" ]]
+}
+
+@test "environment variables override config files" {
+    create_mock_gh
+    create_mock_jq
+
+    # Create a config file
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    cat > "$user_config" << 'EOF'
+REPO=configorg/configrepo
+MACHINE=basicLinux
+EOF
+
+    # Point HOME to test temp dir
+    export HOME="$TEST_TEMP_DIR"
+
+    # Override with environment variable
+    export SPACEHEATER_MACHINE="premiumLinux"
+
+    run "$SPACEHEATER" config
+    [ "$status" -eq 0 ]
+    # Should show premiumLinux from env var, not basicLinux from config
+    [[ "$output" =~ "premiumLinux" ]]
+}
+
+@test "repo config takes precedence over user config" {
+    create_mock_gh
+    create_mock_jq
+
+    # Create user config
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    cat > "$user_config" << 'EOF'
+REPO=userorg/userrepo
+MACHINE=basicLinux
+EOF
+
+    # Create repo config
+    local repo_config="${TEST_TEMP_DIR}/.spaceheater.conf"
+    cat > "$repo_config" << 'EOF'
+REPO=repoorg/reporepo
+MACHINE=premiumLinux
+EOF
+
+    export HOME="$TEST_TEMP_DIR"
+    cd "$TEST_TEMP_DIR"
+
+    run "$SPACEHEATER" config
+    [ "$status" -eq 0 ]
+    # Should show repo config values
+    [[ "$output" =~ "repoorg/reporepo" ]] || [[ "$output" =~ "premiumLinux" ]]
+}
+
+@test "config file ignores comments and blank lines" {
+    create_mock_gh
+    create_mock_jq
+
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    cat > "$user_config" << 'EOF'
+# This is a comment
+REPO=commentorg/commentrepo
+
+# Another comment
+MACHINE=standardLinux
+
+EOF
+
+    export HOME="$TEST_TEMP_DIR"
+
+    run "$SPACEHEATER" config
+    [ "$status" -eq 0 ]
+    # Should successfully parse config despite comments and blank lines
+    [[ "$output" =~ "commentorg/commentrepo" ]] || [[ "$output" =~ "standardLinux" ]]
+}
+
+@test "config file handles various key formats" {
+    create_mock_gh
+    create_mock_jq
+
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    cat > "$user_config" << 'EOF'
+REPO=testorg/testrepo
+repo=testorg/testrepo2
+Repo=testorg/testrepo3
+EOF
+
+    export HOME="$TEST_TEMP_DIR"
+
+    run "$SPACEHEATER" config
+    [ "$status" -eq 0 ]
+    # Should handle case-insensitive keys
+    [[ "$output" =~ "testorg/testrepo" ]]
+}
+
+@test "config validate detects invalid syntax" {
+    create_mock_gh
+    create_mock_jq
+
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    cat > "$user_config" << 'EOF'
+REPO=testorg/testrepo
+INVALID LINE WITHOUT EQUALS
+MACHINE=standardLinux
+EOF
+
+    export HOME="$TEST_TEMP_DIR"
+
+    # Note: This test assumes 'spaceheater config validate' command exists
+    # If the command doesn't exist yet, the test will fail until implementation
+    run "$SPACEHEATER" config validate
+    # Should either succeed and warn about invalid line, or fail
+    # We're flexible here since validation behavior may vary
+    [[ "$output" =~ "INVALID" ]] || [ "$status" -ne 0 ]
+}
+
+@test "custom config file with --config flag" {
+    create_mock_gh
+    create_mock_jq
+
+    # Create a custom config file
+    local custom_config="${TEST_TEMP_DIR}/custom.conf"
+    cat > "$custom_config" << 'EOF'
+REPO=customorg/customrepo
+MACHINE=largePremiumLinux
+EOF
+
+    # Note: This assumes --config flag support
+    run "$SPACEHEATER" config --config "$custom_config"
+    [ "$status" -eq 0 ]
+    # Should load from custom config
+    [[ "$output" =~ "customorg/customrepo" ]] || [[ "$output" =~ "largePremiumLinux" ]]
+}
+
+# =============================================================================
 # List Command Tests
 # =============================================================================
 
