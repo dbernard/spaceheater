@@ -271,7 +271,11 @@ Shows current settings, detected repository, and devcontainer configuration.
 
 ## ⚙️ Configuration
 
-Configure via environment variables (all optional):
+Spaceheater offers flexible configuration through environment variables and optional configuration files.
+
+### Configuration Variables
+
+All configuration is optional - spaceheater auto-detects sensible defaults:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -288,6 +292,216 @@ Configure via environment variables (all optional):
 | `NO_COLOR` | (not set) | Disable colored output when set to any value |
 | `SPACEHEATER_UI_STYLE` | Auto-detect | Force UI mode: plain or simple for limited terminals |
 
+### Configuration Files (Optional)
+
+Configuration files provide persistent settings without cluttering your shell environment. **Files are completely optional** - environment variables and auto-detection still work as before.
+
+#### File Locations and Precedence
+
+Spaceheater checks for configuration files in this order (highest priority first):
+
+1. **Environment variables** - Always take precedence over config files
+2. **`.spaceheater.conf`** - Repo-specific config in your git repository root
+3. **`~/.config/spaceheater/config`** - User-wide config for all projects
+4. **Auto-detected defaults** - From git, GitHub API, and devcontainer.json
+
+#### Config File Format
+
+Config files use simple `KEY=value` format without the `SPACEHEATER_` prefix:
+
+```bash
+# ~/.config/spaceheater/config or .spaceheater.conf
+
+# Repository settings
+REPO=myorg/myrepo
+BRANCH=develop
+
+# Connection preferences
+CONNECT=ssh
+MACHINE=premiumLinux
+
+# Advanced options
+RETENTION=168h
+IDLE_TIMEOUT=30m
+LOCATION=WestEurope
+DEVCONTAINER_PATH=.devcontainer/python/devcontainer.json
+DISPLAY_NAME=my-codespace
+
+# Debug mode
+DEBUG=false
+```
+
+**Important notes:**
+- Lines starting with `#` are comments
+- Blank lines are ignored
+- No quotes needed around values
+- Keys are case-insensitive (REPO, repo, and Repo all work)
+- Use `KEY=value` format, not `SPACEHEATER_KEY=value`
+
+#### Example: Complete Config File
+
+```bash
+# Complete configuration example with all available options
+# Save as ~/.config/spaceheater/config or .spaceheater.conf
+
+# ==============================================================================
+# Repository Configuration
+# ==============================================================================
+
+# Target repository (format: owner/repo)
+# Example: REPO=facebook/react
+REPO=myorg/myrepo
+
+# Default branch to create codespaces from
+# Example: BRANCH=main, develop, staging
+BRANCH=develop
+
+# ==============================================================================
+# Connection Settings
+# ==============================================================================
+
+# How to connect when starting codespaces
+# Options: browser, ssh, code
+# - browser: Opens in github.dev (default, works everywhere)
+# - ssh: Opens SSH connection in terminal (good for CLI workflows)
+# - code: Opens in VS Code desktop (requires VS Code installed)
+CONNECT=ssh
+
+# ==============================================================================
+# Machine Resources
+# ==============================================================================
+
+# Machine type for codespaces
+# Options: basicLinux, basicLinux32gb, standardLinux, standardLinux32gb,
+#          premiumLinux, premiumLinux32gb, largePremiumLinux
+# Tip: Use basicLinux for light work, premiumLinux for heavy builds
+MACHINE=premiumLinux
+
+# ==============================================================================
+# Lifecycle Settings
+# ==============================================================================
+
+# Retention period before auto-deletion
+# Format: hours (e.g., 168h = 7 days, 720h = 30 days)
+# Default: GitHub organization setting
+RETENTION=168h
+
+# Idle timeout before auto-stop
+# Format: minutes or hours (e.g., 30m, 1h, 2h)
+# Default: GitHub organization setting
+IDLE_TIMEOUT=30m
+
+# ==============================================================================
+# Advanced Options
+# ==============================================================================
+
+# Azure region for codespace hosting
+# Options: EastUs, WestEurope, SoutheastAsia
+# Choose region closest to you for lower latency
+LOCATION=WestEurope
+
+# Path to devcontainer.json (for monorepos)
+# Example: DEVCONTAINER_PATH=.devcontainer/backend/devcontainer.json
+# DEVCONTAINER_PATH=.devcontainer.json
+
+# Custom display name prefix for created codespaces
+# Example: DISPLAY_NAME=feature-work
+# DISPLAY_NAME=
+
+# ==============================================================================
+# Debug Settings
+# ==============================================================================
+
+# Enable debug output for troubleshooting
+# Options: true, false
+DEBUG=false
+```
+
+#### Config Management Commands
+
+```bash
+# Create a new config file interactively
+spaceheater config init
+
+# Edit your config file (uses $EDITOR or falls back to vi)
+spaceheater config edit
+
+# Validate config file syntax
+spaceheater config validate
+
+# Show current effective configuration (merged from all sources)
+spaceheater config
+```
+
+#### Per-Command Config Override
+
+Use the `--config` flag to use a different config file for a single command:
+
+```bash
+# Use custom config for this command only
+spaceheater create 2 --config /path/to/custom.conf
+
+# Different configs for different projects
+spaceheater create 1 --config ~/configs/work-project.conf
+spaceheater create 1 --config ~/configs/side-project.conf
+
+# Test a new config without committing it
+spaceheater list --config /tmp/test.conf
+```
+
+Environment variables still override config file settings when using `--config`.
+
+#### How Config Files Interact with Environment Variables
+
+Environment variables always take precedence over config files. This lets you:
+
+1. Set defaults in config files
+2. Override for specific commands with env vars
+
+**Example:**
+
+```bash
+# Config file sets: MACHINE=standardLinux, CONNECT=browser
+
+# Use config file defaults
+spaceheater create 2
+
+# Override machine type for this command only
+SPACEHEATER_MACHINE=premiumLinux spaceheater create 1
+
+# Override connection method for this session
+export SPACEHEATER_CONNECT=ssh
+spaceheater start  # Uses SSH, but machine type still from config
+```
+
+#### Repo-Specific vs User-Wide Config
+
+**Use `.spaceheater.conf` in repo root for:**
+- Project-specific settings (machine type, devcontainer path)
+- Team-shared defaults (commit to git for consistency)
+- Overriding user defaults for specific projects
+
+**Use `~/.config/spaceheater/config` for:**
+- Personal preferences (connection method, location)
+- Defaults across all projects
+- Settings you don't want to commit to git
+
+**Example workflow:**
+
+```bash
+# User config: ~/.config/spaceheater/config
+CONNECT=ssh
+LOCATION=WestEurope
+
+# Project config: /path/to/project/.spaceheater.conf
+REPO=myorg/backend
+MACHINE=premiumLinux
+BRANCH=develop
+
+# Result: Uses SSH and WestEurope from user config,
+#         but premiumLinux and develop branch from project config
+```
+
 ### Configuration Philosophy
 
 Spaceheater automatically detects sensible defaults from your repository and GitHub's API, while allowing overrides when needed.
@@ -300,6 +514,8 @@ Spaceheater automatically detects sensible defaults from your repository and Git
 This ensures codespaces are created with appropriate resources without requiring manual configuration, while preventing unexpected costs from expensive machine types.
 
 ### Example Configurations
+
+**Using environment variables:**
 
 ```bash
 # Use repository defaults (recommended)
@@ -328,6 +544,87 @@ SPACEHEATER_MACHINE=standardLinux SPACEHEATER_RETENTION=168h spaceheater create 
 export SPACEHEATER_REPO=myorg/myrepo
 export SPACEHEATER_CONNECT=ssh  # Use SSH by default
 export SPACEHEATER_MACHINE=premiumLinux
+```
+
+**Using config files:**
+
+```bash
+# Create user-wide config
+spaceheater config init
+# Choose: 1) User-wide config (~/.config/spaceheater/config)
+
+# Create repo-specific config
+cd /path/to/project
+spaceheater config init
+# Choose: 2) Repo-specific config (.spaceheater.conf)
+
+# Now commands use config automatically
+spaceheater create 2  # Uses settings from config file
+
+# Override config for one command
+SPACEHEATER_MACHINE=basicLinux spaceheater create 1
+```
+
+### Troubleshooting Config Issues
+
+**Check which config file is being used:**
+
+```bash
+spaceheater config
+# Shows: Config file: ~/.config/spaceheater/config
+```
+
+**Validate config syntax:**
+
+```bash
+spaceheater config validate
+# Reports any syntax errors or invalid values
+```
+
+**Config not being loaded:**
+
+1. Verify file location:
+   ```bash
+   ls -la ~/.config/spaceheater/config
+   ls -la .spaceheater.conf
+   ```
+
+2. Check file format (no `SPACEHEATER_` prefix in config files):
+   ```bash
+   # Wrong:
+   SPACEHEATER_REPO=owner/repo
+
+   # Correct:
+   REPO=owner/repo
+   ```
+
+3. Look for syntax errors:
+   ```bash
+   # Wrong:
+   REPO = owner/repo  # No spaces around =
+   REPO="owner/repo"  # No quotes needed
+
+   # Correct:
+   REPO=owner/repo
+   ```
+
+**Environment variable not overriding config:**
+
+Make sure you're using the full `SPACEHEATER_` prefix with environment variables:
+
+```bash
+# Wrong:
+REPO=other/repo spaceheater create 1
+
+# Correct:
+SPACEHEATER_REPO=other/repo spaceheater create 1
+```
+
+**Debug config loading:**
+
+```bash
+# Enable debug mode to see config resolution
+SPACEHEATER_DEBUG=true spaceheater config
 ```
 
 ## 💡 Examples & Workflows

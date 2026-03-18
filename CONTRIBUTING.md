@@ -104,6 +104,70 @@ SPACEHEATER_REPO=owner/repo ./spaceheater config
 SPACEHEATER_MACHINE=basicLinux ./spaceheater config
 ```
 
+### Testing with Configuration Files
+
+When testing changes related to configuration:
+
+```bash
+# Test with user-wide config
+mkdir -p ~/.config/spaceheater
+cat > ~/.config/spaceheater/config << 'EOF'
+REPO=testorg/testrepo
+MACHINE=standardLinux
+CONNECT=ssh
+EOF
+./spaceheater config
+
+# Test with repo-specific config
+cat > .spaceheater.conf << 'EOF'
+REPO=localorg/localrepo
+MACHINE=premiumLinux
+EOF
+./spaceheater config
+
+# Test with custom config file
+./spaceheater config --config /tmp/test.conf
+
+# Test config validation
+./spaceheater config validate
+
+# Test that env vars override config
+SPACEHEATER_MACHINE=basicLinux ./spaceheater config
+
+# Clean up test configs
+rm ~/.config/spaceheater/config
+rm .spaceheater.conf
+```
+
+**Config file format requirements:**
+- Use `KEY=value` format (no spaces around `=`)
+- Do NOT use `SPACEHEATER_` prefix in config files
+- Comments start with `#`
+- Blank lines are ignored
+- Keys are case-insensitive
+- No quotes needed around values
+
+**Config loading order (highest priority first):**
+1. Environment variables with `SPACEHEATER_` prefix
+2. Repo-specific config (`.spaceheater.conf` in git root)
+3. User-wide config (`~/.config/spaceheater/config`)
+4. Auto-detected defaults
+
+**Where config logic lives in the code:**
+
+The configuration file loading and parsing logic is implemented in the main `spaceheater` script:
+
+- `load_config_file()` - Loads and parses config files, handles precedence
+- `get_config_value()` - Retrieves config values with proper precedence (env vars > config files > defaults)
+- `cmd_config()` - Implements the `config` command and subcommands (init, edit, validate)
+- Config file locations are checked in: repo root (`.spaceheater.conf`) and `~/.config/spaceheater/config`
+
+When modifying config logic:
+- Ensure environment variables always take precedence
+- Maintain backward compatibility with existing environment variable usage
+- Update tests in `test/spaceheater.bats` to cover new config behavior
+- Update documentation in README.md and docs/GUIDE.md
+
 ### Testing Installation
 
 To test the installation process:

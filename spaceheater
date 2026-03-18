@@ -11,10 +11,208 @@
 #   spaceheater clean [days]      Delete codespaces older than N days (default: 7)
 #   spaceheater delete <name>     Delete a specific codespace
 #   spaceheater config            Show current configuration
+#   spaceheater config init       Create a config file template
+#   spaceheater config edit       Edit your config file
+#   spaceheater config validate   Validate config file syntax
 #   spaceheater help              Show this help
 #   spaceheater version           Show version information
+#
+# Options:
+#   --config=<file>               Load configuration from a specific file
 
 set -euo pipefail
+
+# ============================================================================
+# CONFIGURATION FILE SYSTEM
+# ============================================================================
+
+# Find all config files that exist (in order: system, user, repo)
+find_config_files() {
+  local -a config_files=()
+
+  # System config
+  if [ -f "/etc/spaceheater/config" ]; then
+    config_files+=("/etc/spaceheater/config")
+  fi
+
+  # User config (XDG spec)
+  local user_config="${XDG_CONFIG_HOME:-$HOME/.config}/spaceheater/config"
+  if [ -f "$user_config" ]; then
+    config_files+=("$user_config")
+  fi
+
+  # Repository config
+  if [ -f ".spaceheater.conf" ]; then
+    config_files+=(".spaceheater.conf")
+  fi
+
+  # Use conditional expansion to handle empty array with set -u
+  printf '%s\n' "${config_files[@]+"${config_files[@]}"}"
+}
+
+# Track which variables were set by environment before config loading
+# Using a space-separated string instead of associative array for bash 3 compatibility
+ENV_VARS_SET=""
+
+# Load a single config file
+# Sets SPACEHEATER_* variables for keys not already set
+load_config_file() {
+  local config_file="$1"
+
+  if [ ! -f "$config_file" ]; then
+    return 0
+  fi
+
+  debug "Loading config file: $config_file"
+
+  while IFS='=' read -r key value; do
+    # Skip empty lines
+    if [ -z "$key" ]; then
+      continue
+    fi
+
+    # Skip comments
+    if [[ "$key" =~ ^[[:space:]]*# ]]; then
+      continue
+    fi
+
+    # Trim whitespace from key and value
+    key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    # Skip if key or value is empty after trimming
+    if [ -z "$key" ] || [ -z "$value" ]; then
+      continue
+    fi
+
+    # Add SPACEHEATER_ prefix if not present
+    if [[ ! "$key" =~ ^SPACEHEATER_ ]]; then
+      key="SPACEHEATER_${key}"
+    fi
+
+    # Convert to uppercase
+    key=$(echo "$key" | tr '[:lower:]' '[:upper:]')
+
+    # Skip if this variable was set in the environment before config loading
+    if [[ " $ENV_VARS_SET " =~ " $key " ]]; then
+      debug "  Skipped $key (set by environment)"
+      continue
+    fi
+
+    # Always set the value (later config files override earlier ones)
+    export "$key=$value"
+    debug "  Set $key=$value"
+  done < "$config_file"
+}
+
+# Load configuration from all config files
+load_config_files() {
+  local -a config_files
+  # Use while read instead of mapfile for bash 3 compatibility
+  while IFS= read -r line; do
+    config_files+=("$line")
+  done < <(find_config_files)
+
+  # Use conditional expansion to handle empty array with set -u
+  for config_file in "${config_files[@]+"${config_files[@]}"}"; do
+    load_config_file "$config_file"
+    if [ -z "$LOADED_CONFIG_FILES" ]; then
+      LOADED_CONFIG_FILES="$config_file"
+    else
+      LOADED_CONFIG_FILES="$LOADED_CONFIG_FILES"$'\n'"$config_file"
+    fi
+  done
+}
+
+# Load a specific config file (for --config flag)
+load_specific_config() {
+  local config_file="$1"
+
+  if [ ! -f "$config_file" ]; then
+    error "Config file not found: $config_file"
+  fi
+
+  debug "Loading specific config file: $config_file"
+  load_config_file "$config_file"
+  LOADED_CONFIG_FILES="$config_file (via --config)"
+}
+
+# Validate a config file (for validate subcommand)
+validate_config_file() {
+  local config_file="${1:-.spaceheater.conf}"
+
+  if [ ! -f "$config_file" ]; then
+    error "Config file not found: $config_file"
+  fi
+
+  local line_num=0
+  local errors=0
+  local warnings=0
+
+  info "Validating config file: $config_file"
+  echo
+
+  # Valid config keys (without SPACEHEATER_ prefix)
+  local valid_keys="REPO BRANCH MACHINE RETENTION IDLE_TIMEOUT DEVCONTAINER_PATH DISPLAY_NAME LOCATION CONNECT DEBUG UI_STYLE"
+
+  while IFS='=' read -r key value; do
+    line_num=$((line_num + 1))
+
+    # Skip empty lines
+    if [ -z "$key" ]; then
+      continue
+    fi
+
+    # Skip comments
+    if [[ "$key" =~ ^[[:space:]]*# ]]; then
+      continue
+    fi
+
+    # Trim whitespace
+    key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    # Check for empty key or value
+    if [ -z "$key" ]; then
+      continue
+    fi
+
+    if [ -z "$value" ]; then
+      warn "Line $line_num: Empty value for key '$key'"
+      warnings=$((warnings + 1))
+      continue
+    fi
+
+    # Remove SPACEHEATER_ prefix if present for validation
+    local check_key="$key"
+    if [[ "$check_key" =~ ^SPACEHEATER_ ]]; then
+      check_key="${check_key#SPACEHEATER_}"
+    fi
+
+    # Convert to uppercase for checking
+    check_key=$(echo "$check_key" | tr '[:lower:]' '[:upper:]')
+
+    # Check if key is valid
+    if [[ ! " $valid_keys " =~ " $check_key " ]]; then
+      error_msg="Line $line_num: Unknown configuration key '$key'"
+      echo -e "${RED}${ICON_ERROR} $error_msg${NC}"
+      errors=$((errors + 1))
+    else
+      echo -e "${GREEN}${ICON_CHECK}${NC} Line $line_num: $key=$value"
+    fi
+  done < "$config_file"
+
+  echo
+  if [ "$errors" -eq 0 ] && [ "$warnings" -eq 0 ]; then
+    success "Config file is valid!"
+    return 0
+  elif [ "$errors" -eq 0 ]; then
+    warn "Config file is valid with $warnings warning(s)"
+    return 0
+  else
+    error "Config file has $errors error(s) and $warnings warning(s)"
+  fi
+}
 
 # ============================================================================
 # SPACEHEATER CONFIGURATION
@@ -259,23 +457,42 @@ init_repo_config() {
   debug "Repository: $REPO, Branch: $BRANCH"
 }
 
-# Configuration (only set for help command, others will call init_repo_config)
-REPO="${REPO:-}"
-BRANCH="${BRANCH:-}"
+# Initialize configuration variables from environment
+# This function is called after config files are loaded
+init_config_vars() {
+  # Configuration (only set for help command, others will call init_repo_config)
+  REPO="${SPACEHEATER_REPO:-${REPO:-}}"
+  BRANCH="${SPACEHEATER_BRANCH:-${BRANCH:-}}"
 
-# Optional overrides - only pass to GitHub if explicitly set by user
-MACHINE="${SPACEHEATER_MACHINE:-}"
-RETENTION="${SPACEHEATER_RETENTION:-}"
-IDLE_TIMEOUT="${SPACEHEATER_IDLE_TIMEOUT:-}"
-DEVCONTAINER_PATH="${SPACEHEATER_DEVCONTAINER_PATH:-}"
-DISPLAY_NAME="${SPACEHEATER_DISPLAY_NAME:-}"
-LOCATION="${SPACEHEATER_LOCATION:-}"
+  # Optional overrides - only pass to GitHub if explicitly set by user
+  MACHINE="${SPACEHEATER_MACHINE:-}"
+  RETENTION="${SPACEHEATER_RETENTION:-}"
+  IDLE_TIMEOUT="${SPACEHEATER_IDLE_TIMEOUT:-}"
+  DEVCONTAINER_PATH="${SPACEHEATER_DEVCONTAINER_PATH:-}"
+  DISPLAY_NAME="${SPACEHEATER_DISPLAY_NAME:-}"
+  LOCATION="${SPACEHEATER_LOCATION:-}"
 
-# Connection method: browser, ssh, or code (VS Code)
-CONNECT_METHOD="${SPACEHEATER_CONNECT:-browser}"
+  # Connection method: browser, ssh, or code (VS Code)
+  CONNECT_METHOD="${SPACEHEATER_CONNECT:-browser}"
 
-# Debug mode
-DEBUG="${SPACEHEATER_DEBUG:-false}"
+  # Debug mode
+  DEBUG="${SPACEHEATER_DEBUG:-false}"
+}
+
+# Placeholder variables (will be initialized after config loading)
+REPO=""
+BRANCH=""
+MACHINE=""
+RETENTION=""
+IDLE_TIMEOUT=""
+DEVCONTAINER_PATH=""
+DISPLAY_NAME=""
+LOCATION=""
+CONNECT_METHOD=""
+DEBUG="false"
+
+# Track loaded config files for display
+LOADED_CONFIG_FILES=""
 
 # ============================================================================
 # MESSAGING FUNCTIONS
@@ -992,9 +1209,136 @@ cmd_delete() {
   fi
 }
 
+cmd_config_init() {
+  local config_file="${1:-.spaceheater.conf}"
+  local target_location=""
+
+  # Determine where to create the config file
+  if [ "$config_file" = ".spaceheater.conf" ]; then
+    target_location="repository"
+  elif [[ "$config_file" =~ \.config/spaceheater ]]; then
+    target_location="user"
+  else
+    target_location="custom"
+  fi
+
+  # Check if file already exists
+  if [ -f "$config_file" ]; then
+    warn "Config file already exists: $config_file"
+    read -p "Overwrite? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      info "Cancelled."
+      return 0
+    fi
+  fi
+
+  # Create parent directory if needed
+  local config_dir=$(dirname "$config_file")
+  if [ ! -d "$config_dir" ] && [ "$config_dir" != "." ]; then
+    mkdir -p "$config_dir"
+    info "Created directory: $config_dir"
+  fi
+
+  # Create template config file
+  cat > "$config_file" << 'EOF'
+# Spaceheater Configuration File
+# All keys are optional and can be uncommented to override defaults
+# Format: KEY=value (no spaces around =)
+# Keys do NOT need SPACEHEATER_ prefix in config files
+
+# Repository Settings
+# REPO=owner/repo
+# BRANCH=main
+
+# Connection Settings
+# CONNECT=browser    # Options: browser, ssh, code
+
+# Codespace Overrides
+# MACHINE=standardLinux
+# RETENTION=168h
+# IDLE_TIMEOUT=30m
+# DEVCONTAINER_PATH=.devcontainer/devcontainer.json
+# DISPLAY_NAME=my-codespace
+# LOCATION=WestUs2
+
+# UI Settings
+# UI_STYLE=unicode   # Options: unicode, plain, simple
+
+# Debug Settings
+# DEBUG=false
+EOF
+
+  success "Created config template: $config_file"
+  echo ""
+  info "Edit this file to customize your configuration."
+  info "Lines starting with # are comments and will be ignored."
+  echo ""
+  info "Config file precedence (highest to lowest):"
+  info "  1. Environment variables (SPACEHEATER_*)"
+  info "  2. Repository config (.spaceheater.conf)"
+  info "  3. User config (~/.config/spaceheater/config)"
+  info "  4. System config (/etc/spaceheater/config)"
+  info "  5. Built-in defaults"
+  echo ""
+  info "To edit: spaceheater config edit"
+}
+
+cmd_config_edit() {
+  local user_config="${XDG_CONFIG_HOME:-$HOME/.config}/spaceheater/config"
+
+  # Check if in a git repo for .spaceheater.conf
+  if git rev-parse --git-dir &>/dev/null 2>&1 && [ -f ".spaceheater.conf" ]; then
+    info "Found repository config: .spaceheater.conf"
+    read -p "Edit repository config instead of user config? [Y/n] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+      user_config=".spaceheater.conf"
+    fi
+  fi
+
+  # Create config if it doesn't exist
+  if [ ! -f "$user_config" ]; then
+    info "Config file doesn't exist. Creating template..."
+    cmd_config_init "$user_config"
+    echo ""
+  fi
+
+  # Use $EDITOR or fall back to sensible defaults
+  local editor="${EDITOR:-}"
+  if [ -z "$editor" ]; then
+    if command -v nano &>/dev/null; then
+      editor="nano"
+    elif command -v vim &>/dev/null; then
+      editor="vim"
+    elif command -v vi &>/dev/null; then
+      editor="vi"
+    else
+      error "No editor found. Set EDITOR environment variable or install nano/vim."
+    fi
+  fi
+
+  info "Opening config file in $editor..."
+  "$editor" "$user_config"
+
+  success "Config file updated!"
+  info "Run 'spaceheater config' to see current configuration."
+}
+
 cmd_config() {
   echo -e "${BOLD}${ICON_BRAND} SPACEHEATER CONFIGURATION${NC}"
   echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+
+  # Show loaded config files
+  echo -e "${BOLD}Loaded Config Files:${NC}"
+  if [ -z "$LOADED_CONFIG_FILES" ]; then
+    echo -e "  ${DIM}No config files found (using environment variables and defaults)${NC}"
+  else
+    while IFS= read -r config_file; do
+      echo -e "  ${GREEN}${ICON_CHECK}${NC} $config_file"
+    done <<< "$LOADED_CONFIG_FILES"
+  fi
+  echo ""
 
   echo -e "${BOLD}Repository Settings:${NC}"
   echo -e "  ${ICON_REPO} SPACEHEATER_REPO:              ${CYAN}${SPACEHEATER_REPO:-<auto-detect from git>}${NC}"
@@ -1012,6 +1356,10 @@ cmd_config() {
   echo -e "  ${ICON_REPO} SPACEHEATER_DEVCONTAINER_PATH: ${CYAN}${DEVCONTAINER_PATH:-<auto-detect>}${NC}"
   echo -e "  ${ICON_REGION} SPACEHEATER_LOCATION:          ${CYAN}${LOCATION:-<auto-detect closest region>}${NC}"
   echo -e "  ${ICON_CALENDAR} SPACEHEATER_DISPLAY_NAME:      ${CYAN}${DISPLAY_NAME:-<GitHub-generated>}${NC}"
+  echo ""
+
+  echo -e "${BOLD}UI Settings:${NC}"
+  echo -e "  ${ICON_INFO} SPACEHEATER_UI_STYLE:          ${CYAN}${SPACEHEATER_UI_STYLE:-unicode}${NC} ${DIM}(options: unicode, plain, simple)${NC}"
   echo ""
 
   echo -e "${BOLD}Debug Settings:${NC}"
@@ -1052,9 +1400,18 @@ cmd_config() {
   echo -e "  Spaceheater respects your repository's devcontainer and GitHub's defaults."
   echo -e "  Only set environment variables when you need to override these defaults."
   echo ""
-  echo -e "${BOLD}${ICON_NEXT} To override a setting:${NC}"
-  echo -e "  ${DIM}export SPACEHEATER_MACHINE=premiumLinux${NC}"
-  echo -e "  ${DIM}export SPACEHEATER_RETENTION=168h${NC}"
+  echo -e "${BOLD}${ICON_NEXT} Available Commands:${NC}"
+  echo -e "  ${CYAN}spaceheater config init${NC}      Create a config file template"
+  echo -e "  ${CYAN}spaceheater config edit${NC}      Edit your config file"
+  echo -e "  ${CYAN}spaceheater config validate${NC}  Validate config file syntax"
+  echo ""
+  echo -e "${BOLD}${ICON_NEXT} Configuration Precedence (highest to lowest):${NC}"
+  echo -e "  ${DIM}1. CLI arguments${NC}"
+  echo -e "  ${DIM}2. Environment variables (SPACEHEATER_*)${NC}"
+  echo -e "  ${DIM}3. Repository config (.spaceheater.conf)${NC}"
+  echo -e "  ${DIM}4. User config (~/.config/spaceheater/config)${NC}"
+  echo -e "  ${DIM}5. System config (/etc/spaceheater/config)${NC}"
+  echo -e "  ${DIM}6. Built-in defaults${NC}"
 }
 
 cmd_version() {
@@ -1079,11 +1436,20 @@ cmd_help() {
   echo -e "  ${CYAN}clean [days]${NC}       Delete codespaces older than N days (default: 7)"
   echo -e "  ${CYAN}delete <name>${NC}      Delete a specific codespace (supports fuzzy matching)"
   echo -e "  ${CYAN}config${NC}             Show current configuration"
+  echo -e "  ${CYAN}config init${NC}        Create a config file template"
+  echo -e "  ${CYAN}config edit${NC}        Edit your config file"
+  echo -e "  ${CYAN}config validate${NC}    Validate config file syntax"
   echo -e "  ${CYAN}version${NC}            Show version information"
   echo -e "  ${CYAN}help${NC}               Show this help"
 
   echo ""
+  echo -e "${BOLD}OPTIONS${NC}"
+  echo -e "  ${CYAN}--config=<file>${NC}    Load configuration from a specific file"
+  echo ""
   echo -e "${BOLD}EXAMPLES${NC}"
+  echo -e "  ${DIM}# Initialize a config file in the current repository${NC}"
+  echo -e "  ${GREEN}spaceheater config init${NC}"
+  echo ""
   echo -e "  ${DIM}# Create 2 pre-warmed codespaces${NC}"
   echo -e "  ${GREEN}spaceheater create 2${NC}"
   echo ""
@@ -1141,35 +1507,94 @@ cmd_help() {
 # ============================================================================
 
 main() {
+  # Parse --config flag before anything else
+  local custom_config=""
+  local -a args=()
+  local expect_config_value=0
+
+  for arg in "$@"; do
+    if [ $expect_config_value -eq 1 ]; then
+      custom_config="$arg"
+      expect_config_value=0
+    elif [[ "$arg" =~ ^--config= ]]; then
+      custom_config="${arg#--config=}"
+    elif [[ "$arg" == "--config" ]]; then
+      expect_config_value=1
+    else
+      args+=("$arg")
+    fi
+  done
+
+  if [ $expect_config_value -eq 1 ]; then
+    error "Usage: --config=<file> or --config <file>"
+  fi
+
+  # Track which SPACEHEATER_* variables were set in the environment
+  # before loading config files (these take highest precedence)
+  for var in REPO BRANCH MACHINE RETENTION IDLE_TIMEOUT DEVCONTAINER_PATH DISPLAY_NAME LOCATION CONNECT DEBUG UI_STYLE; do
+    local env_var="SPACEHEATER_${var}"
+    if [ -n "${!env_var:-}" ]; then
+      ENV_VARS_SET="$ENV_VARS_SET $env_var"
+    fi
+  done
+
+  # Load config files early (before check_dependencies to allow config to affect behavior)
+  if [ -n "$custom_config" ]; then
+    load_specific_config "$custom_config"
+  else
+    load_config_files
+  fi
+
+  # Initialize configuration variables from loaded config
+  init_config_vars
+
   check_dependencies
 
-  local cmd="${1:-help}"
-  shift || true
+  local cmd="${args[0]:-help}"
+  unset 'args[0]'
 
   case "$cmd" in
     create)
-      cmd_create "$@"
+      cmd_create "${args[@]}"
       ;;
     list|ls)
-      cmd_list "$@"
+      cmd_list "${args[@]}"
       ;;
     start)
-      cmd_start "$@"
+      cmd_start "${args[@]}"
       ;;
     autostart)
       cmd_autostart
       ;;
     stop)
-      cmd_stop "$@"
+      cmd_stop "${args[@]}"
       ;;
     clean)
-      cmd_clean "$@"
+      cmd_clean "${args[@]}"
       ;;
     delete|rm)
-      cmd_delete "$@"
+      cmd_delete "${args[@]}"
       ;;
     config)
-      cmd_config
+      # Handle config subcommands
+      local subcmd="${args[1]:-show}"
+      case "$subcmd" in
+        init)
+          cmd_config_init "${args[2]:-}"
+          ;;
+        edit)
+          cmd_config_edit
+          ;;
+        validate)
+          validate_config_file "${args[2]:-}"
+          ;;
+        show|"")
+          cmd_config
+          ;;
+        *)
+          error "Unknown config subcommand: $subcmd\nValid subcommands: init, edit, validate, show"
+          ;;
+      esac
       ;;
     version|--version|-v)
       cmd_version

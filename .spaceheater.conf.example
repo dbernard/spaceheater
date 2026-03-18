@@ -1,0 +1,128 @@
+# spaceheater configuration file example
+# Copy this file to one of these locations:
+#   - ~/.config/spaceheater/config  (user-wide config for all projects)
+#   - .spaceheater.conf             (repo-specific config in git root)
+#
+# Or use a custom location with: spaceheater --config /path/to/config
+
+# ==============================================================================
+# Repository Configuration
+# ==============================================================================
+
+# Target repository (format: owner/repo)
+# Default: Auto-detected from git remote
+# Example: REPO=facebook/react
+# REPO=myorg/myrepo
+
+# Default branch to create codespaces from
+# Default: Auto-detected from repository default branch
+# Example: BRANCH=main, develop, staging
+# BRANCH=develop
+
+# ==============================================================================
+# Connection Settings
+# ==============================================================================
+
+# How to connect when starting codespaces
+# Options: browser, ssh, code
+#   - browser: Opens in github.dev (default, works everywhere)
+#   - ssh: Opens SSH connection in terminal (good for CLI workflows)
+#   - code: Opens in VS Code desktop (requires VS Code installed)
+# Default: browser
+# CONNECT=ssh
+
+# ==============================================================================
+# Machine Resources
+# ==============================================================================
+
+# Machine type for codespaces
+# Options:
+#   - basicLinux           (2 cores, 4 GB RAM)
+#   - basicLinux32gb       (2 cores, 8 GB RAM)
+#   - standardLinux        (4 cores, 8 GB RAM)
+#   - standardLinux32gb    (4 cores, 16 GB RAM)
+#   - premiumLinux         (8 cores, 16 GB RAM)
+#   - premiumLinux32gb     (8 cores, 32 GB RAM)
+#   - largePremiumLinux    (16 cores, 64 GB RAM)
+# Default: Auto-detected from GitHub API (respects devcontainer hostRequirements)
+# Tip: Use basicLinux for light work, premiumLinux for heavy builds/compilation
+# MACHINE=premiumLinux
+
+# ==============================================================================
+# Lifecycle Settings
+# ==============================================================================
+
+# Retention period before automatic deletion
+# Format: hours (e.g., 168h = 7 days, 720h = 30 days)
+# Default: Your GitHub organization's default retention policy
+# Tip: Set shorter retention (168h) to avoid accumulating old codespaces
+# RETENTION=168h
+
+# Idle timeout before automatic stop
+# Format: minutes or hours (e.g., 30m, 1h, 2h)
+# Default: Your GitHub organization's default idle timeout
+# Tip: Shorter timeouts save costs but may interrupt work
+# IDLE_TIMEOUT=30m
+
+# ==============================================================================
+# Advanced Options
+# ==============================================================================
+
+# Azure region for codespace hosting
+# Options: EastUs, WestEurope, SoutheastAsia
+# Default: Auto-detected based on your location
+# Tip: Choose region closest to you for lower latency
+# LOCATION=WestEurope
+
+# Path to devcontainer.json (useful for monorepos)
+# Default: Auto-detected (.devcontainer/devcontainer.json or .devcontainer.json)
+# Example: DEVCONTAINER_PATH=.devcontainer/backend/devcontainer.json
+# DEVCONTAINER_PATH=.devcontainer.json
+
+# Custom display name prefix for created codespaces
+# Default: GitHub generates friendly names (e.g., "fuzzy-umbrella")
+# Example: DISPLAY_NAME=feature-work
+# Tip: Use this to identify codespaces by purpose or feature branch
+# DISPLAY_NAME=
+
+# ==============================================================================
+# Debug Settings
+# ==============================================================================
+
+# Enable debug output for troubleshooting
+# Options: true, false
+# Default: false
+# Tip: Enable this if commands aren't working as expected
+# DEBUG=false
+
+# ==============================================================================
+# Notes
+# ==============================================================================
+#
+# Config File Format:
+#   - Use KEY=value format (no spaces around =)
+#   - Do NOT use SPACEHEATER_ prefix in config files
+#   - No quotes needed around values
+#   - Lines starting with # are comments
+#   - Blank lines are ignored
+#
+# Precedence (highest to lowest):
+#   1. Environment variables (e.g., SPACEHEATER_MACHINE=basicLinux)
+#   2. Repo-specific config (.spaceheater.conf)
+#   3. User-wide config (~/.config/spaceheater/config)
+#   4. Auto-detected defaults
+#
+# Environment variables always override config files:
+#   SPACEHEATER_MACHINE=basicLinux spaceheater create 1
+#
+# Use --config flag to override config file for one command:
+#   spaceheater create 2 --config /path/to/custom.conf
+#
+# Validation:
+#   Run 'spaceheater config validate' to check for syntax errors
+#
+# Management commands:
+#   spaceheater config         Show current configuration
+#   spaceheater config init    Create a new config file interactively
+#   spaceheater config edit    Edit your config file
+#   spaceheater config validate Validate config file syntax

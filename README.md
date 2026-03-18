@@ -138,6 +138,42 @@ export SPACEHEATER_CONNECT=ssh
 export SPACEHEATER_MACHINE=standardLinux
 ```
 
+### Configuration Files (Optional)
+
+Spaceheater supports optional configuration files for persistent settings without modifying your shell environment.
+
+**File hierarchy (highest priority first):**
+1. Environment variables (always take precedence)
+2. `.spaceheater.conf` - Repo-specific config (in your git repo root)
+3. `~/.config/spaceheater/config` - User-wide config
+4. Auto-detected defaults
+
+**Example config file:**
+```bash
+# ~/.config/spaceheater/config or .spaceheater.conf
+REPO=myorg/myrepo
+CONNECT=ssh
+MACHINE=premiumLinux
+BRANCH=develop
+```
+
+Note: Config files use `KEY=value` format without the `SPACEHEATER_` prefix.
+
+**Config management commands:**
+```bash
+# Create a new config file interactively
+spaceheater config init
+
+# Edit your config file
+spaceheater config edit
+
+# Validate config file syntax
+spaceheater config validate
+
+# Use a specific config file for one command
+spaceheater create 2 --config /path/to/custom.conf
+```
+
 For all configuration options and advanced usage, see [Full Documentation](docs/GUIDE.md#%EF%B8%8F-configuration).
 
 ## Documentation
