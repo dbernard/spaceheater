@@ -134,6 +134,37 @@ spaceheater version           Show version information
 spaceheater help              Show help message
 ```
 
+### JSON Output Support
+
+All spaceheater commands support JSON output for programmatic consumption and LLM integration:
+
+```bash
+# Add --json flag to any command
+spaceheater list --json
+spaceheater start my-codespace --json
+spaceheater config --json
+
+# Short form also supported
+spaceheater list -j
+
+# Alternative syntax
+spaceheater list --output=json
+```
+
+JSON output includes:
+- **Complete metadata**: All fields from GitHub API
+- **Temperature classification**: hot/warm/cold/transitioning states
+- **Git status**: Clean/dirty status with commit ahead/behind counts
+- **Timestamps**: ISO 8601 formatted dates
+- **Success/error status**: Consistent error handling
+
+Perfect for:
+- CI/CD pipelines and GitHub Actions
+- LLM tool integration (Claude, GitHub Copilot)
+- Scripting and automation
+- Monitoring dashboards
+- Bulk operations
+
 ### Create Codespaces
 
 ```bash
