@@ -1717,21 +1717,46 @@ cmd_config_init() {
   fi
 
   # Check if file already exists
+  local file_existed=false
+  local overwritten=false
   if [ -f "$config_file" ]; then
-    warn "Config file already exists: $config_file"
-    read -p "Overwrite? [y/N] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-      info "Cancelled."
-      return 0
+    file_existed=true
+    # Skip interactive prompt in JSON mode
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      # In JSON mode, don't overwrite by default - return error
+      jq -n \
+        --arg file "$config_file" \
+        --arg location "$target_location" \
+        '{
+          success: false,
+          error: "Config file already exists",
+          file_path: $file,
+          location: $location,
+          overwritten: false,
+          timestamp: (now | todate)
+        }'
+      return 1
+    else
+      warn "Config file already exists: $config_file"
+      read -p "Overwrite? [y/N] " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        info "Cancelled."
+        return 0
+      fi
+      overwritten=true
     fi
   fi
 
   # Create parent directory if needed
   local config_dir=$(dirname "$config_file")
+  local dir_created=false
   if [ ! -d "$config_dir" ] && [ "$config_dir" != "." ]; then
     mkdir -p "$config_dir"
-    info "Created directory: $config_dir"
+    dir_created=true
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Created directory: $config_dir"
+    fi
   fi
 
   # Create template config file
@@ -1763,39 +1788,91 @@ cmd_config_init() {
 # DEBUG=false
 EOF
 
-  success "Created config template: $config_file"
-  echo ""
-  info "Edit this file to customize your configuration."
-  info "Lines starting with # are comments and will be ignored."
-  echo ""
-  info "Config file precedence (highest to lowest):"
-  info "  1. Environment variables (SPACEHEATER_*)"
-  info "  2. Repository config (.spaceheater.conf)"
-  info "  3. User config (~/.config/spaceheater/config)"
-  info "  4. System config (/etc/spaceheater/config)"
-  info "  5. Built-in defaults"
-  echo ""
-  info "To edit: spaceheater config edit"
+  # Get absolute path for JSON output
+  local abs_path=$(cd "$(dirname "$config_file")" && pwd)/$(basename "$config_file")
+
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    jq -n \
+      --arg file "$abs_path" \
+      --arg location "$target_location" \
+      --argjson dir_created "$dir_created" \
+      --argjson file_existed "$file_existed" \
+      --argjson overwritten "$overwritten" \
+      '{
+        success: true,
+        message: "Created config template",
+        file_path: $file,
+        location: $location,
+        directory_created: $dir_created,
+        file_existed: $file_existed,
+        overwritten: $overwritten,
+        template: "default",
+        timestamp: (now | todate)
+      }'
+  else
+    success "Created config template: $config_file"
+    echo ""
+    info "Edit this file to customize your configuration."
+    info "Lines starting with # are comments and will be ignored."
+    echo ""
+    info "Config file precedence (highest to lowest):"
+    info "  1. Environment variables (SPACEHEATER_*)"
+    info "  2. Repository config (.spaceheater.conf)"
+    info "  3. User config (~/.config/spaceheater/config)"
+    info "  4. System config (/etc/spaceheater/config)"
+    info "  5. Built-in defaults"
+    echo ""
+    info "To edit: spaceheater config edit"
+  fi
 }
 
 cmd_config_edit() {
   local user_config="${XDG_CONFIG_HOME:-$HOME/.config}/spaceheater/config"
+  local config_type="user"
 
   # Check if in a git repo for .spaceheater.conf
+  local repo_config_available=false
   if git rev-parse --git-dir &>/dev/null 2>&1 && [ -f ".spaceheater.conf" ]; then
-    info "Found repository config: .spaceheater.conf"
-    read -p "Edit repository config instead of user config? [Y/n] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    repo_config_available=true
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Found repository config: .spaceheater.conf"
+      read -p "Edit repository config instead of user config? [Y/n] " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        user_config=".spaceheater.conf"
+        config_type="repository"
+      fi
+    else
+      # In JSON mode, prefer repository config if it exists
       user_config=".spaceheater.conf"
+      config_type="repository"
     fi
   fi
 
   # Create config if it doesn't exist
+  local file_exists=true
   if [ ! -f "$user_config" ]; then
-    info "Config file doesn't exist. Creating template..."
-    cmd_config_init "$user_config"
-    echo ""
+    file_exists=false
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      # In JSON mode, return info about non-existent file
+      jq -n \
+        --arg file "$user_config" \
+        --arg config_type "$config_type" \
+        '{
+          success: false,
+          error: "Config file does not exist",
+          message: "Use \"spaceheater config init\" to create a config file first",
+          file_path: $file,
+          config_type: $config_type,
+          file_exists: false,
+          timestamp: (now | todate)
+        }'
+      return 1
+    else
+      info "Config file doesn't exist. Creating template..."
+      cmd_config_init "$user_config"
+      echo ""
+    fi
   fi
 
   # Use $EDITOR or fall back to sensible defaults
@@ -1808,113 +1885,343 @@ cmd_config_edit() {
     elif command -v vi &>/dev/null; then
       editor="vi"
     else
-      error "No editor found. Set EDITOR environment variable or install nano/vim."
+      if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+        jq -n \
+          --arg file "$user_config" \
+          '{
+            success: false,
+            error: "No editor found",
+            message: "Set EDITOR environment variable or install nano/vim",
+            file_path: $file,
+            timestamp: (now | todate)
+          }'
+        return 1
+      else
+        error "No editor found. Set EDITOR environment variable or install nano/vim."
+      fi
     fi
   fi
 
-  info "Opening config file in $editor..."
-  "$editor" "$user_config"
+  # Get absolute path for JSON output
+  local abs_path=$(cd "$(dirname "$user_config")" && pwd)/$(basename "$user_config")
 
-  success "Config file updated!"
-  info "Run 'spaceheater config' to see current configuration."
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # In JSON mode, don't actually open the editor - return info about what would be edited
+    jq -n \
+      --arg file "$abs_path" \
+      --arg editor "$editor" \
+      --arg config_type "$config_type" \
+      --argjson file_exists "$file_exists" \
+      --argjson repo_available "$repo_config_available" \
+      '{
+        success: true,
+        message: "Config edit information (editor not opened in JSON mode)",
+        file_path: $file,
+        editor: $editor,
+        config_type: $config_type,
+        file_exists: $file_exists,
+        repository_config_available: $repo_available,
+        note: "Use text output mode to interactively edit the config file",
+        timestamp: (now | todate)
+      }'
+  else
+    info "Opening config file in $editor..."
+    "$editor" "$user_config"
+
+    success "Config file updated!"
+    info "Run 'spaceheater config' to see current configuration."
+  fi
 }
 
 cmd_config() {
-  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER CONFIGURATION${NC}"
-  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Helper function to determine the source of a configuration value
+    get_config_source() {
+      local var_name="$1"
+      local env_var="SPACEHEATER_${var_name}"
 
-  # Show loaded config files
-  echo -e "${BOLD}Loaded Config Files:${NC}"
-  if [ -z "$LOADED_CONFIG_FILES" ]; then
-    echo -e "  ${DIM}No config files found (using environment variables and defaults)${NC}"
-  else
-    while IFS= read -r config_file; do
-      echo -e "  ${GREEN}${ICON_CHECK}${NC} $config_file"
-    done <<< "$LOADED_CONFIG_FILES"
-  fi
-  echo ""
-
-  echo -e "${BOLD}Repository Settings:${NC}"
-  echo -e "  ${ICON_REPO} SPACEHEATER_REPO:              ${CYAN}${SPACEHEATER_REPO:-<auto-detect from git>}${NC}"
-  echo -e "  ${ICON_BRANCH} SPACEHEATER_BRANCH:            ${CYAN}${SPACEHEATER_BRANCH:-<auto-detect from repo>}${NC}"
-  echo ""
-
-  echo -e "${BOLD}Connection Settings:${NC}"
-  echo -e "  ${ICON_ARROW_RIGHT} SPACEHEATER_CONNECT:           ${CYAN}${CONNECT_METHOD:-browser}${NC} ${DIM}(options: browser, ssh, code)${NC}"
-  echo ""
-
-  echo -e "${BOLD}Codespace Overrides ${DIM}(optional):${NC}"
-  echo -e "  ${ICON_MACHINE} SPACEHEATER_MACHINE:           ${CYAN}${MACHINE:-<use devcontainer or GitHub default>}${NC}"
-  echo -e "  ${ICON_TIMER} SPACEHEATER_RETENTION:         ${CYAN}${RETENTION:-<use GitHub default>}${NC}"
-  echo -e "  ${ICON_TIMER} SPACEHEATER_IDLE_TIMEOUT:      ${CYAN}${IDLE_TIMEOUT:-<use GitHub/org default>}${NC}"
-  echo -e "  ${ICON_REPO} SPACEHEATER_DEVCONTAINER_PATH: ${CYAN}${DEVCONTAINER_PATH:-<auto-detect>}${NC}"
-  echo -e "  ${ICON_REGION} SPACEHEATER_LOCATION:          ${CYAN}${LOCATION:-<auto-detect closest region>}${NC}"
-  echo -e "  ${ICON_CALENDAR} SPACEHEATER_DISPLAY_NAME:      ${CYAN}${DISPLAY_NAME:-<GitHub-generated>}${NC}"
-  echo ""
-
-  echo -e "${BOLD}UI Settings:${NC}"
-  echo -e "  ${ICON_INFO} SPACEHEATER_UI_STYLE:          ${CYAN}${SPACEHEATER_UI_STYLE:-unicode}${NC} ${DIM}(options: unicode, plain, simple)${NC}"
-  echo ""
-
-  echo -e "${BOLD}Debug Settings:${NC}"
-  echo -e "  ${ICON_INFO} SPACEHEATER_DEBUG:             ${CYAN}${DEBUG:-false}${NC}"
-  echo ""
-
-  echo -e "${BOLD}Current Detection:${NC}"
-
-  # Try to detect and show current values
-  if detect_repo &>/dev/null; then
-    local detected_repo=$(detect_repo)
-    echo -e "  ${ICON_CHECK} Detected Repository:           ${GREEN}$detected_repo${NC}"
-    echo -e "  ${ICON_CHECK} Detected Branch:               ${GREEN}$(detect_default_branch)${NC}"
-
-    # Try to show devcontainer info if we're in the repo
-    if [ -f ".devcontainer/devcontainer.json" ]; then
-      echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer/devcontainer.json (found)${NC}"
-
-      # Try to extract hostRequirements if jq is available
-      if command -v jq &>/dev/null; then
-        local cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
-        local memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
-        if [ -n "$cpus" ] || [ -n "$memory" ]; then
-          echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
-        fi
+      # Check if set in environment
+      if [[ " $ENV_VARS_SET " =~ " $env_var " ]]; then
+        echo "environment"
+      # Check if value is set (from config file)
+      elif [ -n "${!env_var:-}" ]; then
+        echo "config_file"
+      else
+        echo "default"
       fi
-    elif [ -f ".devcontainer.json" ]; then
-      echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer.json (found)${NC}"
-    else
-      echo -e "  ${ICON_INFO} Devcontainer:                  ${DIM}<none - will use GitHub default image>${NC}"
-    fi
-  else
-    echo -e "  ${ICON_CROSS} Detected Repository:           ${DIM}<none - not in a git repo>${NC}"
-  fi
+    }
 
-  echo -e "\n${DIM}────────────────────────────────────────────────────────────────${NC}"
-  echo -e "${BOLD}${ICON_INFO} Configuration Philosophy:${NC}"
-  echo -e "  Spaceheater respects your repository's devcontainer and GitHub's defaults."
-  echo -e "  Only set environment variables when you need to override these defaults."
-  echo ""
-  echo -e "${BOLD}${ICON_NEXT} Available Commands:${NC}"
-  echo -e "  ${CYAN}spaceheater config init${NC}      Create a config file template"
-  echo -e "  ${CYAN}spaceheater config edit${NC}      Edit your config file"
-  echo -e "  ${CYAN}spaceheater config validate${NC}  Validate config file syntax"
-  echo ""
-  echo -e "${BOLD}${ICON_NEXT} Configuration Precedence (highest to lowest):${NC}"
-  echo -e "  ${DIM}1. CLI arguments${NC}"
-  echo -e "  ${DIM}2. Environment variables (SPACEHEATER_*)${NC}"
-  echo -e "  ${DIM}3. Repository config (.spaceheater.conf)${NC}"
-  echo -e "  ${DIM}4. User config (~/.config/spaceheater/config)${NC}"
-  echo -e "  ${DIM}5. System config (/etc/spaceheater/config)${NC}"
-  echo -e "  ${DIM}6. Built-in defaults${NC}"
+    # Collect loaded config files
+    local config_files_json="[]"
+    if [ -n "$LOADED_CONFIG_FILES" ]; then
+      while IFS= read -r config_file; do
+        config_files_json=$(echo "$config_files_json" | jq --arg file "$config_file" '. + [$file]')
+      done <<< "$LOADED_CONFIG_FILES"
+    fi
+
+    # Detect current repository values
+    local detected_repo=""
+    local detected_branch=""
+    local devcontainer_path=""
+    local devcontainer_cpus=""
+    local devcontainer_memory=""
+
+    if detect_repo &>/dev/null; then
+      detected_repo=$(detect_repo)
+      detected_branch=$(detect_default_branch)
+
+      if [ -f ".devcontainer/devcontainer.json" ]; then
+        devcontainer_path=".devcontainer/devcontainer.json"
+        if command -v jq &>/dev/null; then
+          devcontainer_cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
+          devcontainer_memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
+        fi
+      elif [ -f ".devcontainer.json" ]; then
+        devcontainer_path=".devcontainer.json"
+      fi
+    fi
+
+    # Build JSON output
+    jq -n \
+      --argjson config_files "$config_files_json" \
+      --arg repo_value "${SPACEHEATER_REPO:-}" \
+      --arg repo_source "$(get_config_source REPO)" \
+      --arg branch_value "${SPACEHEATER_BRANCH:-}" \
+      --arg branch_source "$(get_config_source BRANCH)" \
+      --arg connect_value "${CONNECT_METHOD:-browser}" \
+      --arg connect_source "$(get_config_source CONNECT)" \
+      --arg machine_value "${MACHINE:-}" \
+      --arg machine_source "$(get_config_source MACHINE)" \
+      --arg retention_value "${RETENTION:-}" \
+      --arg retention_source "$(get_config_source RETENTION)" \
+      --arg idle_timeout_value "${IDLE_TIMEOUT:-}" \
+      --arg idle_timeout_source "$(get_config_source IDLE_TIMEOUT)" \
+      --arg devcontainer_path_value "${DEVCONTAINER_PATH:-}" \
+      --arg devcontainer_path_source "$(get_config_source DEVCONTAINER_PATH)" \
+      --arg location_value "${LOCATION:-}" \
+      --arg location_source "$(get_config_source LOCATION)" \
+      --arg display_name_value "${DISPLAY_NAME:-}" \
+      --arg display_name_source "$(get_config_source DISPLAY_NAME)" \
+      --arg ui_style_value "${SPACEHEATER_UI_STYLE:-unicode}" \
+      --arg ui_style_source "$(get_config_source UI_STYLE)" \
+      --arg debug_value "${DEBUG:-false}" \
+      --arg debug_source "$(get_config_source DEBUG)" \
+      --arg detected_repo "$detected_repo" \
+      --arg detected_branch "$detected_branch" \
+      --arg detected_devcontainer "$devcontainer_path" \
+      --arg detected_cpus "$devcontainer_cpus" \
+      --arg detected_memory "$devcontainer_memory" \
+      '{
+        loaded_config_files: $config_files,
+        repository: {
+          repo: {
+            value: (if $repo_value != "" then $repo_value else null end),
+            source: $repo_source,
+            detected: (if $detected_repo != "" then $detected_repo else null end)
+          },
+          branch: {
+            value: (if $branch_value != "" then $branch_value else null end),
+            source: $branch_source,
+            detected: (if $detected_branch != "" then $detected_branch else null end)
+          }
+        },
+        connection: {
+          method: {
+            value: $connect_value,
+            source: $connect_source,
+            options: ["browser", "ssh", "code"]
+          }
+        },
+        codespace_overrides: {
+          machine: {
+            value: (if $machine_value != "" then $machine_value else null end),
+            source: $machine_source
+          },
+          retention: {
+            value: (if $retention_value != "" then $retention_value else null end),
+            source: $retention_source
+          },
+          idle_timeout: {
+            value: (if $idle_timeout_value != "" then $idle_timeout_value else null end),
+            source: $idle_timeout_source
+          },
+          devcontainer_path: {
+            value: (if $devcontainer_path_value != "" then $devcontainer_path_value else null end),
+            source: $devcontainer_path_source,
+            detected: (if $detected_devcontainer != "" then $detected_devcontainer else null end)
+          },
+          location: {
+            value: (if $location_value != "" then $location_value else null end),
+            source: $location_source
+          },
+          display_name: {
+            value: (if $display_name_value != "" then $display_name_value else null end),
+            source: $display_name_source
+          }
+        },
+        ui: {
+          style: {
+            value: $ui_style_value,
+            source: $ui_style_source,
+            options: ["unicode", "plain", "simple"]
+          }
+        },
+        debug: {
+          enabled: {
+            value: $debug_value,
+            source: $debug_source
+          }
+        },
+        detected: {
+          repository: (if $detected_repo != "" then $detected_repo else null end),
+          branch: (if $detected_branch != "" then $detected_branch else null end),
+          devcontainer: (if $detected_devcontainer != "" then {
+            path: $detected_devcontainer,
+            requirements: {
+              cpus: (if $detected_cpus != "" then $detected_cpus else null end),
+              memory: (if $detected_memory != "" then $detected_memory else null end)
+            }
+          } else null end)
+        },
+        timestamp: (now | todate)
+      }'
+  else
+    echo -e "${BOLD}${ICON_BRAND} SPACEHEATER CONFIGURATION${NC}"
+    echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+
+    # Show loaded config files
+    echo -e "${BOLD}Loaded Config Files:${NC}"
+    if [ -z "$LOADED_CONFIG_FILES" ]; then
+      echo -e "  ${DIM}No config files found (using environment variables and defaults)${NC}"
+    else
+      while IFS= read -r config_file; do
+        echo -e "  ${GREEN}${ICON_CHECK}${NC} $config_file"
+      done <<< "$LOADED_CONFIG_FILES"
+    fi
+    echo ""
+
+    echo -e "${BOLD}Repository Settings:${NC}"
+    echo -e "  ${ICON_REPO} SPACEHEATER_REPO:              ${CYAN}${SPACEHEATER_REPO:-<auto-detect from git>}${NC}"
+    echo -e "  ${ICON_BRANCH} SPACEHEATER_BRANCH:            ${CYAN}${SPACEHEATER_BRANCH:-<auto-detect from repo>}${NC}"
+    echo ""
+
+    echo -e "${BOLD}Connection Settings:${NC}"
+    echo -e "  ${ICON_ARROW_RIGHT} SPACEHEATER_CONNECT:           ${CYAN}${CONNECT_METHOD:-browser}${NC} ${DIM}(options: browser, ssh, code)${NC}"
+    echo ""
+
+    echo -e "${BOLD}Codespace Overrides ${DIM}(optional):${NC}"
+    echo -e "  ${ICON_MACHINE} SPACEHEATER_MACHINE:           ${CYAN}${MACHINE:-<use devcontainer or GitHub default>}${NC}"
+    echo -e "  ${ICON_TIMER} SPACEHEATER_RETENTION:         ${CYAN}${RETENTION:-<use GitHub default>}${NC}"
+    echo -e "  ${ICON_TIMER} SPACEHEATER_IDLE_TIMEOUT:      ${CYAN}${IDLE_TIMEOUT:-<use GitHub/org default>}${NC}"
+    echo -e "  ${ICON_REPO} SPACEHEATER_DEVCONTAINER_PATH: ${CYAN}${DEVCONTAINER_PATH:-<auto-detect>}${NC}"
+    echo -e "  ${ICON_REGION} SPACEHEATER_LOCATION:          ${CYAN}${LOCATION:-<auto-detect closest region>}${NC}"
+    echo -e "  ${ICON_CALENDAR} SPACEHEATER_DISPLAY_NAME:      ${CYAN}${DISPLAY_NAME:-<GitHub-generated>}${NC}"
+    echo ""
+
+    echo -e "${BOLD}UI Settings:${NC}"
+    echo -e "  ${ICON_INFO} SPACEHEATER_UI_STYLE:          ${CYAN}${SPACEHEATER_UI_STYLE:-unicode}${NC} ${DIM}(options: unicode, plain, simple)${NC}"
+    echo ""
+
+    echo -e "${BOLD}Debug Settings:${NC}"
+    echo -e "  ${ICON_INFO} SPACEHEATER_DEBUG:             ${CYAN}${DEBUG:-false}${NC}"
+    echo ""
+
+    echo -e "${BOLD}Current Detection:${NC}"
+
+    # Try to detect and show current values
+    if detect_repo &>/dev/null; then
+      local detected_repo=$(detect_repo)
+      echo -e "  ${ICON_CHECK} Detected Repository:           ${GREEN}$detected_repo${NC}"
+      echo -e "  ${ICON_CHECK} Detected Branch:               ${GREEN}$(detect_default_branch)${NC}"
+
+      # Try to show devcontainer info if we're in the repo
+      if [ -f ".devcontainer/devcontainer.json" ]; then
+        echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer/devcontainer.json (found)${NC}"
+
+        # Try to extract hostRequirements if jq is available
+        if command -v jq &>/dev/null; then
+          local cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
+          local memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
+          if [ -n "$cpus" ] || [ -n "$memory" ]; then
+            echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
+          fi
+        fi
+      elif [ -f ".devcontainer.json" ]; then
+        echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer.json (found)${NC}"
+      else
+        echo -e "  ${ICON_INFO} Devcontainer:                  ${DIM}<none - will use GitHub default image>${NC}"
+      fi
+    else
+      echo -e "  ${ICON_CROSS} Detected Repository:           ${DIM}<none - not in a git repo>${NC}"
+    fi
+
+    echo -e "\n${DIM}────────────────────────────────────────────────────────────────${NC}"
+    echo -e "${BOLD}${ICON_INFO} Configuration Philosophy:${NC}"
+    echo -e "  Spaceheater respects your repository's devcontainer and GitHub's defaults."
+    echo -e "  Only set environment variables when you need to override these defaults."
+    echo ""
+    echo -e "${BOLD}${ICON_NEXT} Available Commands:${NC}"
+    echo -e "  ${CYAN}spaceheater config init${NC}      Create a config file template"
+    echo -e "  ${CYAN}spaceheater config edit${NC}      Edit your config file"
+    echo -e "  ${CYAN}spaceheater config validate${NC}  Validate config file syntax"
+    echo ""
+    echo -e "${BOLD}${ICON_NEXT} Configuration Precedence (highest to lowest):${NC}"
+    echo -e "  ${DIM}1. CLI arguments${NC}"
+    echo -e "  ${DIM}2. Environment variables (SPACEHEATER_*)${NC}"
+    echo -e "  ${DIM}3. Repository config (.spaceheater.conf)${NC}"
+    echo -e "  ${DIM}4. User config (~/.config/spaceheater/config)${NC}"
+    echo -e "  ${DIM}5. System config (/etc/spaceheater/config)${NC}"
+    echo -e "  ${DIM}6. Built-in defaults${NC}"
+  fi
 }
 
 cmd_version() {
-  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} version ${CYAN}$VERSION${NC}"
-  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
-  echo -e "A tool for pre-creating fully-built GitHub Codespaces that are ready for instant startup."
-  echo ""
-  echo -e "${ICON_REPO} Project: ${CYAN}https://github.com/dbernard/spaceheater${NC}"
-  echo -e "${ICON_CALENDAR} License: ${CYAN}MIT${NC}"
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Get git commit hash if available
+    local git_commit=""
+    if git rev-parse HEAD &>/dev/null 2>&1; then
+      git_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+    fi
+
+    # Get system information
+    local os_type=$(uname -s)
+    local os_version=$(uname -r)
+    local platform=$(uname -m)
+    local bash_version="${BASH_VERSION}"
+
+    # Output JSON
+    jq -n \
+      --arg version "$VERSION" \
+      --arg git_commit "$git_commit" \
+      --arg os_type "$os_type" \
+      --arg os_version "$os_version" \
+      --arg platform "$platform" \
+      --arg bash_version "$bash_version" \
+      --arg project_url "https://github.com/dbernard/spaceheater" \
+      --arg license "MIT" \
+      '{
+        version: $version,
+        git_commit: (if $git_commit != "" then $git_commit else null end),
+        system: {
+          os_type: $os_type,
+          os_version: $os_version,
+          platform: $platform,
+          bash_version: $bash_version
+        },
+        project: {
+          url: $project_url,
+          license: $license
+        },
+        timestamp: (now | todate)
+      }'
+  else
+    echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} version ${CYAN}$VERSION${NC}"
+    echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+    echo -e "A tool for pre-creating fully-built GitHub Codespaces that are ready for instant startup."
+    echo ""
+    echo -e "${ICON_REPO} Project: ${CYAN}https://github.com/dbernard/spaceheater${NC}"
+    echo -e "${ICON_CALENDAR} License: ${CYAN}MIT${NC}"
+  fi
 }
 
 cmd_help() {

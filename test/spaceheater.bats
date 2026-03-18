@@ -569,6 +569,10 @@ EOF
     [[ "$output" =~ "Unknown output format: xml" ]]
 }
 
+# =============================================================================
+# JSON Output Tests - Action Commands (start, stop)
+# =============================================================================
+
 @test "start command supports --json flag" {
     # Mock gh to return codespace data
     create_mock_gh
@@ -1177,4 +1181,188 @@ EOFMOCK
     echo "$output" | jq empty
     [[ $(echo "$output" | jq -r '.success') == "false" ]]
     [[ $(echo "$output" | jq -r '.created_count') == "0" ]]
+}
+
+# =============================================================================
+# JSON Output Tests for Info Commands
+# =============================================================================
+
+@test "version command supports --json flag" {
+    run "$SPACEHEATER" version --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected fields
+    [[ $(echo "$output" | jq -r '.version') != "null" ]]
+    [[ $(echo "$output" | jq -r '.system') != "null" ]]
+    [[ $(echo "$output" | jq -r '.system.os_type') != "null" ]]
+    [[ $(echo "$output" | jq -r '.system.platform') != "null" ]]
+    [[ $(echo "$output" | jq -r '.system.bash_version') != "null" ]]
+    [[ $(echo "$output" | jq -r '.project.url') != "null" ]]
+    [[ $(echo "$output" | jq -r '.project.license') != "null" ]]
+    [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
+}
+
+@test "version command JSON includes git commit when available" {
+    # Create a temporary git repo for testing
+    cd "$TEST_TEMP_DIR"
+    git init &>/dev/null
+    git config user.email "test@example.com"
+    git config user.name "Test User"
+    echo "test" > test.txt
+    git add test.txt
+    git commit -m "test" &>/dev/null
+
+    run "$SPACEHEATER" version --json
+    [ "$status" -eq 0 ]
+
+    # Git commit should be present since we're in a git repo
+    local git_commit=$(echo "$output" | jq -r '.git_commit')
+    [[ "$git_commit" =~ ^[0-9a-f]+$ ]] || [[ "$git_commit" == "null" ]]
+}
+
+@test "config command supports --json flag" {
+    create_mock_gh
+    create_mock_git
+    create_mock_jq
+
+    run "$SPACEHEATER" config --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected top-level structure
+    [[ $(echo "$output" | jq -r '.loaded_config_files') != "null" ]]
+    [[ $(echo "$output" | jq -r '.repository') != "null" ]]
+    [[ $(echo "$output" | jq -r '.connection') != "null" ]]
+    [[ $(echo "$output" | jq -r '.codespace_overrides') != "null" ]]
+    [[ $(echo "$output" | jq -r '.ui') != "null" ]]
+    [[ $(echo "$output" | jq -r '.debug') != "null" ]]
+    [[ $(echo "$output" | jq -r '.detected') != "null" ]]
+    [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
+}
+
+@test "config command JSON includes source information" {
+    create_mock_gh
+    create_mock_git
+    create_mock_jq
+
+    # Set an environment variable to test source tracking
+    export SPACEHEATER_DEBUG="true"
+
+    run "$SPACEHEATER" config --json
+    [ "$status" -eq 0 ]
+
+    # Check that values have source fields
+    [[ $(echo "$output" | jq -r '.debug.enabled.source') != "null" ]]
+    [[ $(echo "$output" | jq -r '.repository.repo.source') != "null" ]]
+    [[ $(echo "$output" | jq -r '.connection.method.source') != "null" ]]
+}
+
+@test "config command JSON includes detected repository info" {
+    create_mock_gh
+    create_mock_git
+    create_mock_jq
+
+    run "$SPACEHEATER" config --json
+    [ "$status" -eq 0 ]
+
+    # Check detected repository fields
+    [[ $(echo "$output" | jq -r '.detected.repository') == "testorg/testrepo" ]]
+    [[ $(echo "$output" | jq -r '.detected.branch') != "null" ]]
+}
+
+@test "config init command supports --json flag" {
+    cd "$TEST_TEMP_DIR"
+
+    run "$SPACEHEATER" config init .test-config.conf --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected fields
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq -r '.file_path') != "null" ]]
+    [[ $(echo "$output" | jq -r '.location') != "null" ]]
+    [[ $(echo "$output" | jq -r '.template') == "default" ]]
+    [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
+
+    # Verify file was actually created
+    [ -f ".test-config.conf" ]
+}
+
+@test "config init command JSON reports error when file exists" {
+    cd "$TEST_TEMP_DIR"
+
+    # Create the file first
+    echo "test" > .existing-config.conf
+
+    run "$SPACEHEATER" config init .existing-config.conf --json
+    [ "$status" -ne 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected error fields
+    [[ $(echo "$output" | jq -r '.success') == "false" ]]
+    [[ $(echo "$output" | jq -r '.error') == "Config file already exists" ]]
+    [[ $(echo "$output" | jq -r '.file_path') != "null" ]]
+}
+
+@test "config init command JSON tracks directory creation" {
+    cd "$TEST_TEMP_DIR"
+
+    run "$SPACEHEATER" config init newdir/config.conf --json
+    [ "$status" -eq 0 ]
+
+    # Check that directory_created is true
+    [[ $(echo "$output" | jq -r '.directory_created') == "true" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+
+    # Verify directory and file were created
+    [ -d "newdir" ]
+    [ -f "newdir/config.conf" ]
+}
+
+@test "config edit command supports --json flag" {
+    cd "$TEST_TEMP_DIR"
+
+    # Create a config file first
+    echo "REPO=test/repo" > .spaceheater.conf
+
+    # Mock git to make it look like we're in a repo
+    create_mock_git
+
+    run "$SPACEHEATER" config edit --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected fields
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq -r '.file_path') != "null" ]]
+    [[ $(echo "$output" | jq -r '.editor') != "null" ]]
+    [[ $(echo "$output" | jq -r '.config_type') != "null" ]]
+    [[ $(echo "$output" | jq -r '.file_exists') == "true" ]]
+    [[ $(echo "$output" | jq -r '.note') =~ "text output mode" ]]
+}
+
+@test "config edit command JSON reports error when file doesn't exist" {
+    cd "$TEST_TEMP_DIR"
+
+    run "$SPACEHEATER" config edit --json
+    [ "$status" -ne 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected error fields
+    [[ $(echo "$output" | jq -r '.success') == "false" ]]
+    [[ $(echo "$output" | jq -r '.error') == "Config file does not exist" ]]
+    [[ $(echo "$output" | jq -r '.file_exists') == "false" ]]
 }
