@@ -713,3 +713,468 @@ EOF
         [[ $(echo "$output" | jq -r '.codespaces[0].temperature') != "null" ]]
     fi
 }
+
+# =============================================================================
+# JSON Output Tests - Lifecycle Commands (create, delete, clean)
+# =============================================================================
+
+@test "create command supports --json flag" {
+    # Create custom mock gh that handles create properly
+    cat > "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
+#!/usr/bin/env bash
+case "$*" in
+    "auth status")
+        echo "✓ Logged in to github.com as testuser"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo/codespaces/machines --jq .machines[0].name")
+        echo "basicLinux32gb"
+        exit 0
+        ;;
+    "codespace create"*)
+        echo "Creating codespace..."
+        echo "test-created-123"
+        exit 0
+        ;;
+    "api /user/codespaces/test-created-"*)
+        echo '{
+            "name": "test-created-123",
+            "display_name": "Test Created",
+            "state": "Starting",
+            "created_at": "2024-03-18T10:00:00Z",
+            "updated_at": "2024-03-18T10:00:00Z",
+            "git_status": {
+                "has_uncommitted_changes": false,
+                "has_unpushed_changes": false,
+                "ahead": 0,
+                "behind": 0,
+                "ref": "main"
+            },
+            "machine": {
+                "display_name": "2 cores, 8 GB RAM"
+            }
+        }'
+        exit 0
+        ;;
+    *)
+        echo "Mock gh - unhandled: $*" >&2
+        exit 1
+        ;;
+esac
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" create --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected fields
+    [[ $(echo "$output" | jq -r '.action') == "create" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq -r '.codespaces') != "null" ]]
+    [[ $(echo "$output" | jq -r '.count') != "null" ]]
+    [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
+}
+
+@test "create command supports -j shorthand for JSON" {
+    cat > "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
+#!/usr/bin/env bash
+case "$*" in
+    "auth status")
+        echo "✓ Logged in"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo/codespaces/machines --jq .machines[0].name")
+        echo "basicLinux32gb"
+        exit 0
+        ;;
+    "codespace create"*)
+        echo "test-created-456"
+        exit 0
+        ;;
+    "api /user/codespaces/test-created-"*)
+        echo '{
+            "name": "test-created-456",
+            "display_name": "Test Created 2",
+            "state": "Starting",
+            "created_at": "2024-03-18T10:00:00Z",
+            "updated_at": "2024-03-18T10:00:00Z",
+            "git_status": {},
+            "machine": {"display_name": "2 cores, 8 GB RAM"}
+        }'
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" create -j
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq -r '.action') == "create" ]]
+}
+
+@test "create command JSON output includes created codespace details" {
+    cat > "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
+#!/usr/bin/env bash
+case "$*" in
+    "auth status")
+        echo "✓ Logged in"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo/codespaces/machines --jq .machines[0].name")
+        echo "basicLinux32gb"
+        exit 0
+        ;;
+    "codespace create"*)
+        echo "new-space-789"
+        exit 0
+        ;;
+    "api /user/codespaces/new-space-"*)
+        echo '{
+            "name": "new-space-789",
+            "display_name": "New Codespace",
+            "state": "Available",
+            "created_at": "2024-03-18T10:00:00Z",
+            "updated_at": "2024-03-18T14:00:00Z",
+            "git_status": {
+                "has_uncommitted_changes": false,
+                "has_unpushed_changes": false,
+                "ahead": 0,
+                "behind": 0,
+                "ref": "main"
+            },
+            "machine": {"display_name": "4 cores, 16 GB RAM"}
+        }'
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" create --json
+    [ "$status" -eq 0 ]
+
+    # Check that codespace details are included
+    [[ $(echo "$output" | jq -r '.codespaces[0].name') == "new-space-789" ]]
+    [[ $(echo "$output" | jq -r '.codespaces[0].state') == "Available" ]]
+    [[ $(echo "$output" | jq -r '.codespaces[0].temperature') != "null" ]]
+    [[ $(echo "$output" | jq -r '.count') == "1" ]]
+}
+
+@test "delete command supports --json flag" {
+    cat > "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
+#!/usr/bin/env bash
+case "$*" in
+    "auth status")
+        echo "✓ Logged in"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /user/codespaces?repository_id=12345678 --jq "*)
+        echo -e "hot-space-001\tRunning Test Codespace"
+        exit 0
+        ;;
+    "codespace delete"*)
+        exit 0
+        ;;
+    "api /user/codespaces/hot-space-001")
+        echo '{
+            "name": "hot-space-001",
+            "display_name": "Running Test Codespace",
+            "state": "Available",
+            "created_at": "2024-03-18T10:00:00Z",
+            "updated_at": "2024-03-18T14:00:00Z",
+            "git_status": {},
+            "machine": {"display_name": "2 cores, 8 GB RAM"}
+        }'
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" delete hot-space-001 --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected fields
+    [[ $(echo "$output" | jq -r '.action') == "delete" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq -r '.codespace') != "null" ]]
+    [[ $(echo "$output" | jq -r '.codespace.name') == "hot-space-001" ]]
+    [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
+}
+
+@test "delete command supports -j shorthand for JSON" {
+    cat > "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
+#!/usr/bin/env bash
+case "$*" in
+    "auth status")
+        echo "✓ Logged in"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /user/codespaces?repository_id=12345678 --jq "*)
+        echo -e "warm-space-002\tClean Stopped Codespace"
+        exit 0
+        ;;
+    "codespace delete"*)
+        exit 0
+        ;;
+    "api /user/codespaces/warm-space-002")
+        echo '{
+            "name": "warm-space-002",
+            "display_name": "Clean Stopped Codespace",
+            "state": "Shutdown",
+            "created_at": "2024-03-18T09:00:00Z",
+            "updated_at": "2024-03-18T14:00:00Z",
+            "git_status": {},
+            "machine": {"display_name": "4 cores, 16 GB RAM"}
+        }'
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" delete warm-space-002 -j
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq -r '.action') == "delete" ]]
+    [[ $(echo "$output" | jq -r '.codespace.name') == "warm-space-002" ]]
+}
+
+@test "clean command supports --json flag" {
+    # Create fixture with old codespaces
+    local old_date=$(date -u -d "30 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-30d +%Y-%m-%dT%H:%M:%SZ)
+    cat > "${FIXTURES}/codespaces.json" << EOF
+{
+  "codespaces": [
+    {
+      "name": "old-space-001",
+      "display_name": "Old Codespace 1",
+      "state": "Shutdown",
+      "created_at": "$old_date",
+      "updated_at": "$old_date",
+      "git_status": {},
+      "machine": {"display_name": "2 cores, 8 GB RAM"}
+    },
+    {
+      "name": "old-space-002",
+      "display_name": "Old Codespace 2",
+      "state": "Shutdown",
+      "created_at": "$old_date",
+      "updated_at": "$old_date",
+      "git_status": {},
+      "machine": {"display_name": "2 cores, 8 GB RAM"}
+    }
+  ],
+  "total_count": 2
+}
+EOF
+
+    cat > "${MOCK_BIN_DIR}/gh" << EOFMOCK
+#!/usr/bin/env bash
+case "\$*" in
+    "auth status")
+        echo "✓ Logged in"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /user/codespaces?repository_id=12345678")
+        cat "${FIXTURES}/codespaces.json"
+        exit 0
+        ;;
+    "codespace delete"*)
+        exit 0
+        ;;
+    "api /user/codespaces/old-space-001")
+        echo '{
+            "name": "old-space-001",
+            "display_name": "Old Codespace 1",
+            "state": "Shutdown",
+            "created_at": "$old_date",
+            "updated_at": "$old_date",
+            "git_status": {},
+            "machine": {"display_name": "2 cores, 8 GB RAM"}
+        }'
+        exit 0
+        ;;
+    "api /user/codespaces/old-space-002")
+        echo '{
+            "name": "old-space-002",
+            "display_name": "Old Codespace 2",
+            "state": "Shutdown",
+            "created_at": "$old_date",
+            "updated_at": "$old_date",
+            "git_status": {},
+            "machine": {"display_name": "2 cores, 8 GB RAM"}
+        }'
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" clean 7 --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+
+    # Check for expected fields
+    [[ $(echo "$output" | jq -r '.action') == "clean" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq -r '.age_threshold_days') == "7" ]]
+    [[ $(echo "$output" | jq -r '.total_found') != "null" ]]
+    [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
+}
+
+@test "clean command supports -j shorthand for JSON" {
+    create_mock_gh
+
+    # Create fixture with no old codespaces
+    cat > "${FIXTURES}/codespaces.json" << 'EOF'
+{
+  "codespaces": [],
+  "total_count": 0
+}
+EOF
+
+    run "$SPACEHEATER" clean 7 -j
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq -r '.action') == "clean" ]]
+    [[ $(echo "$output" | jq -r '.deleted_count') == "0" ]]
+}
+
+@test "clean command JSON output includes deleted count and age threshold" {
+    # Create fixture with one old codespace
+    local old_date=$(date -u -d "15 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-15d +%Y-%m-%dT%H:%M:%SZ)
+    cat > "${FIXTURES}/codespaces.json" << EOF
+{
+  "codespaces": [
+    {
+      "name": "ancient-space",
+      "display_name": "Very Old Codespace",
+      "state": "Shutdown",
+      "created_at": "$old_date",
+      "updated_at": "$old_date",
+      "git_status": {},
+      "machine": {"display_name": "2 cores, 8 GB RAM"}
+    }
+  ],
+  "total_count": 1
+}
+EOF
+
+    cat > "${MOCK_BIN_DIR}/gh" << EOFMOCK
+#!/usr/bin/env bash
+case "\$*" in
+    "auth status")
+        echo "✓ Logged in"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /user/codespaces?repository_id=12345678")
+        cat "${FIXTURES}/codespaces.json"
+        exit 0
+        ;;
+    "codespace delete"*)
+        exit 0
+        ;;
+    "api /user/codespaces/ancient-space")
+        echo '{
+            "name": "ancient-space",
+            "display_name": "Very Old Codespace",
+            "state": "Shutdown",
+            "created_at": "$old_date",
+            "updated_at": "$old_date",
+            "git_status": {},
+            "machine": {"display_name": "2 cores, 8 GB RAM"}
+        }'
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" clean 10 --json
+    [ "$status" -eq 0 ]
+
+    # Check age threshold is included
+    [[ $(echo "$output" | jq -r '.age_threshold_days') == "10" ]]
+    [[ $(echo "$output" | jq -r '.total_found') == "1" ]]
+}
+
+@test "create command JSON output handles creation failure" {
+    create_mock_gh
+    cat >> "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
+if [[ "$1" == "codespace" && "$2" == "create" ]]; then
+    echo "Error: Failed to create codespace" >&2
+    exit 1
+fi
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" create --json
+    [ "$status" -eq 0 ]  # Command should still succeed but report failure in JSON
+
+    # Verify error is reported in JSON
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq -r '.success') == "false" ]]
+    [[ $(echo "$output" | jq -r '.created_count') == "0" ]]
+}

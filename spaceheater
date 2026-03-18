@@ -918,11 +918,14 @@ cmd_create() {
 
   local created=0
   local failed=0
+  local -a created_names=()
 
   for i in $(seq 1 "$count"); do
-    info "[$i/$count] Creating codespace..."
-
-    debug "Creating codespace with: repo=$REPO branch=$BRANCH machine=$effective_machine"
+    # Don't show progress output in JSON mode
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "[$i/$count] Creating codespace..."
+      debug "Creating codespace with: repo=$REPO branch=$BRANCH machine=$effective_machine"
+    fi
 
     # Build args array with only explicitly set values
     local create_args=(
@@ -960,11 +963,16 @@ cmd_create() {
     local codespace_name=$(echo "$output" | tail -1 | grep -E '^[a-z0-9]+-[a-z0-9]+-[a-z0-9-]+$' || echo "")
 
     if [ -n "$codespace_name" ]; then
-      success "  ${ICON_CHECK} Created: $codespace_name"
+      if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+        success "  ${ICON_CHECK} Created: $codespace_name"
+      fi
       created=$((created + 1))
+      created_names+=("$codespace_name")
     else
-      warn "  ${ICON_CROSS} Failed to create codespace"
-      echo "  Output: $output"
+      if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+        warn "  ${ICON_CROSS} Failed to create codespace"
+        echo "  Output: $output"
+      fi
       failed=$((failed + 1))
     fi
 
@@ -974,6 +982,18 @@ cmd_create() {
     fi
   done
 
+  # Handle JSON output
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    if [ ${#created_names[@]} -gt 0 ]; then
+      output_multiple_codespaces_json "create" "${created_names[@]}"
+    else
+      # Output error JSON if all creations failed
+      echo "{\"action\":\"create\",\"success\":false,\"error\":\"Failed to create any codespaces\",\"requested_count\":$count,\"created_count\":0,\"failed_count\":$failed,\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    fi
+    return
+  fi
+
+  # Original text output
   echo
   success "Created $created codespace(s)"
   if [ "$failed" -gt 0 ]; then
@@ -1548,10 +1568,65 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
       .[] | "\(.name)\t\(.display_name // .name)\t\(.created_at)"')
 
   if [ -z "$to_delete" ]; then
-    success "No codespaces older than $days days found."
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      echo "{\"action\":\"clean\",\"success\":true,\"deleted_count\":0,\"age_threshold_days\":$days,\"message\":\"No codespaces older than $days days found\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    else
+      success "No codespaces older than $days days found."
+    fi
     return 0
   fi
 
+  # Count how many we found
+  local total_found=$(echo "$to_delete" | wc -l | tr -d ' ')
+
+  # Handle JSON output - skip confirmation and delete automatically
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    local -a deleted_names=()
+    local deleted=0
+    local failed=0
+
+    # First, fetch details of all codespaces to delete BEFORE deletion
+    local results="[]"
+    while IFS=$'\t' read -r name display_name created_at; do
+      local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+      if [ "$codespace_data" != "{}" ]; then
+        results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
+      fi
+    done <<< "$to_delete"
+
+    # Now delete the codespaces
+    while IFS=$'\t' read -r name display_name created_at; do
+      if gh codespace delete -c "$name" --force 2>/dev/null; then
+        deleted=$((deleted + 1))
+        deleted_names+=("$name")
+      else
+        failed=$((failed + 1))
+      fi
+    done <<< "$to_delete"
+
+    if [ ${#deleted_names[@]} -gt 0 ]; then
+      # Transform and output with age threshold - filter to only successfully deleted ones
+      local codespace_filter=$(build_codespace_json_filter false)
+      echo "$results" | jq --arg days "$days" --argjson deleted_count "$deleted" --argjson failed_count "$failed" --argjson total_found "$total_found" '
+        (now | todate) as $current_time |
+        {
+          action: "clean",
+          success: true,
+          codespaces: (. | map('"$codespace_filter"')),
+          deleted_count: $deleted_count,
+          failed_count: $failed_count,
+          age_threshold_days: ($days | tonumber),
+          total_found: $total_found,
+          timestamp: $current_time
+        }
+      '
+    else
+      echo "{\"action\":\"clean\",\"success\":false,\"error\":\"Failed to delete any codespaces\",\"deleted_count\":0,\"failed_count\":$failed,\"age_threshold_days\":$days,\"total_found\":$total_found,\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    fi
+    return
+  fi
+
+  # Original text output with confirmation
   echo "$to_delete" | while IFS=$'\t' read -r name display_name created_at; do
     echo -e "  - $display_name (created: $created_at)"
   done
@@ -1599,6 +1674,17 @@ cmd_delete() {
   # Get display name for the selected codespace
   local display_name=$(echo "$matches" | grep "^$codespace_name" | cut -f2)
 
+  # Handle JSON output - skip confirmation and interactive output
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    if gh codespace delete -c "$codespace_name" --force 2>/dev/null; then
+      output_single_codespace_json "delete" "$codespace_name" "Codespace deleted successfully"
+    else
+      echo "{\"action\":\"delete\",\"success\":false,\"error\":\"Failed to delete codespace\",\"codespace_name\":\"$codespace_name\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    fi
+    return
+  fi
+
+  # Original text output with confirmation
   info "Deleting codespace: $display_name"
 
   # Add confirmation for safety
