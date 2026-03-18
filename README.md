@@ -3,7 +3,7 @@
 > Personal pre-warming for GitHub Codespaces - your setup, instant startup
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/dbernard/spaceheater/releases)
+[![Version](https://img.shields.io/badge/version-1.1.0-green.svg)](https://github.com/dbernard/spaceheater/releases)
 
 Tired of waiting 5-10 minutes for Codespaces to build? `spaceheater` creates pre-warmed codespaces in the background that start in ~30 seconds when you need them.
 
