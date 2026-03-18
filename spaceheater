@@ -1214,26 +1214,6 @@ cmd_start() {
   local -a cmd_args=()
   local codespace_name=""
 
-  # Example: If JSON output requested for start command (future enhancement)
-  # This shows how easily we can add JSON support to other commands using our utilities
-  # if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
-  #   # Start the codespace and get its details
-  #   # ... start logic here ...
-  #   # Output the result as JSON using our reusable filter
-  #   local codespace_filter=$(build_codespace_json_filter false)  # false = don't include optional fields
-  #   gh codespace view -c "$codespace_name" --json "$(echo "$codespace_filter" | jq -Rs .)" | jq --arg action "start" '
-  #     (now | todate) as $current_time |
-  #     . as $cs |
-  #     {
-  #       action: $action,
-  #       success: true,
-  #       codespace: ($cs | '"$codespace_filter"'),
-  #       timestamp: $current_time
-  #     }
-  #   '
-  #   return
-  # fi
-
   # If search term provided, try to find matching codespace
   if [ -n "$search_term" ]; then
     debug "Searching for codespace matching: $search_term"
@@ -1246,7 +1226,48 @@ cmd_start() {
 
     cmd_args+=(-c "$codespace_name")
   else
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      error "JSON output requires a codespace name or search term"
+    fi
     info "Select a codespace to start..." >&2
+  fi
+
+  # Handle JSON output if requested
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Determine connection URL and method
+    local connection_url=""
+    case "$CONNECT_METHOD" in
+      browser|web)
+        connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
+        ;;
+      ssh)
+        connection_url="ssh://$codespace_name"
+        ;;
+      code|vscode)
+        connection_url="vscode://github.codespaces/$codespace_name"
+        ;;
+    esac
+
+    # Build the complete JQ filter using our utilities
+    local codespace_filter=$(build_codespace_json_filter false)
+
+    # Output JSON with codespace details
+    gh api "/user/codespaces/$codespace_name" | jq \
+      --arg action "start" \
+      --arg connection_url "$connection_url" \
+      --arg connection_method "$CONNECT_METHOD" \
+      "
+      (now | todate) as \$current_time |
+      {
+        action: \$action,
+        success: true,
+        codespace: (. | $codespace_filter),
+        connection_url: \$connection_url,
+        connection_method: \$connection_method,
+        timestamp: \$current_time
+      }
+    "
+    return
   fi
 
   # Connect based on configured method
@@ -1270,13 +1291,54 @@ cmd_start() {
 cmd_autostart() {
   init_repo_config
 
-  info "Finding a clean codespace to start..."
+  if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+    info "Finding a clean codespace to start..."
+  fi
 
   # Auto-select the best clean codespace
   local codespace_name=$(auto_select_codespace)
 
   debug "Selected codespace: $codespace_name"
   local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)"
+
+  # Handle JSON output if requested
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Determine connection URL and method
+    local connection_url=""
+    case "$CONNECT_METHOD" in
+      browser|web)
+        connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
+        ;;
+      ssh)
+        connection_url="ssh://$codespace_name"
+        ;;
+      code|vscode)
+        connection_url="vscode://github.codespaces/$codespace_name"
+        ;;
+    esac
+
+    # Build the complete JQ filter using our utilities
+    local codespace_filter=$(build_codespace_json_filter false)
+
+    # Output JSON with codespace details
+    gh api "/user/codespaces/$codespace_name" | jq \
+      --arg action "autostart" \
+      --arg connection_url "$connection_url" \
+      --arg connection_method "$CONNECT_METHOD" \
+      "
+      (now | todate) as \$current_time |
+      {
+        action: \$action,
+        success: true,
+        codespace: (. | $codespace_filter),
+        connection_url: \$connection_url,
+        connection_method: \$connection_method,
+        timestamp: \$current_time
+      }
+    "
+    return
+  fi
+
   info "Starting codespace: ${display_name:-$codespace_name}..."
 
   # Connect based on configured method
@@ -1307,34 +1369,85 @@ cmd_stop() {
 
   # Special case: stop all running codespaces
   if [ "$search_term" = "all" ]; then
-    info "Finding all running codespaces to stop..."
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Finding all running codespaces to stop..."
+    fi
 
     # Get all running codespaces
     local running_codespaces=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) | .[] | "\(.name)\t\(.display_name // .name)"')
 
     if [ -z "$running_codespaces" ]; then
+      if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+        echo '{
+          "action": "stop",
+          "success": true,
+          "codespaces": [],
+          "count": 0,
+          "message": "No running codespaces found",
+          "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
+        }'
+        return 0
+      fi
       info "No running codespaces found"
       return 0
     fi
 
     # Count how many we're stopping
     local count=$(echo "$running_codespaces" | wc -l | tr -d ' ')
-    info "Found $count running codespace(s)"
-    echo
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Found $count running codespace(s)"
+      echo
+    fi
 
     # Stop each codespace
     local stopped=0
     local failed=0
+    local -a stopped_names=()
     while IFS=$'\t' read -r name display_name; do
-      info "Stopping: $display_name"
+      if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+        info "Stopping: $display_name"
+      fi
       if gh codespace stop -c "$name" 2>/dev/null; then
-        success "  ${ICON_CHECK} Stopped"
+        if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+          success "  ${ICON_CHECK} Stopped"
+        fi
         stopped=$((stopped + 1))
+        stopped_names+=("$name")
       else
-        warn "  ${ICON_CROSS} Failed to stop"
+        if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+          warn "  ${ICON_CROSS} Failed to stop"
+        fi
         failed=$((failed + 1))
       fi
     done <<< "$running_codespaces"
+
+    # Handle JSON output if requested
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      # Build array of stopped codespace details
+      local results="[]"
+      for name in "${stopped_names[@]}"; do
+        local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+        if [ "$codespace_data" != "{}" ]; then
+          results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
+        fi
+      done
+
+      # Transform and output
+      local codespace_filter=$(build_codespace_json_filter false)
+
+      echo "$results" | jq --arg action "stop" --arg msg "Stopped $stopped codespace(s)" "
+        (now | todate) as \$current_time |
+        {
+          action: \$action,
+          success: true,
+          codespaces: (. | map($codespace_filter)),
+          count: . | length,
+          message: \$msg,
+          timestamp: \$current_time
+        }
+      "
+      return 0
+    fi
 
     echo
     success "Stopped $stopped codespace(s)"
@@ -1345,7 +1458,9 @@ cmd_stop() {
   fi
 
   if [ -z "$search_term" ]; then
-    info "Finding running codespace to stop..."
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Finding running codespace to stop..."
+    fi
 
     # Get the most recently used running codespace
     local codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) |
@@ -1366,6 +1481,42 @@ cmd_stop() {
   fi
 
   local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName 2>/dev/null)"
+
+  # Handle JSON output if requested
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Stop the codespace first
+    if gh codespace stop -c "$codespace_name" 2>/dev/null; then
+      # Build the complete JQ filter using our utilities
+      local codespace_filter=$(build_codespace_json_filter false)
+
+      # Output JSON with codespace details
+      gh api "/user/codespaces/$codespace_name" | jq \
+        --arg action "stop" \
+        --arg msg "Stopped successfully" \
+        "
+        (now | todate) as \$current_time |
+        {
+          action: \$action,
+          success: true,
+          codespace: (. | $codespace_filter),
+          message: \$msg,
+          timestamp: \$current_time
+        }
+      "
+    else
+      # Output error as JSON
+      echo '{
+        "action": "stop",
+        "success": false,
+        "message": "Failed to stop codespace",
+        "codespace_name": "'"$codespace_name"'",
+        "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
+      }'
+      exit 1
+    fi
+    return
+  fi
+
   info "Stopping codespace: ${display_name:-$codespace_name}..."
 
   if gh codespace stop -c "$codespace_name"; then

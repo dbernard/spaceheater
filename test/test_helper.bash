@@ -38,15 +38,24 @@ generate_codespaces_fixture() {
       "state": "Available",
       "created_at": "$two_hours_ago",
       "updated_at": "$now",
+      "last_used_at": "$now",
       "git_status": {
         "ahead": 0,
         "behind": 0,
         "has_uncommitted_changes": false,
-        "has_unpushed_changes": false
+        "has_unpushed_changes": false,
+        "ref": "main"
       },
       "machine": {
         "display_name": "2 cores, 8 GB RAM"
-      }
+      },
+      "repository": {
+        "full_name": "testorg/testrepo"
+      },
+      "owner": {
+        "login": "testuser"
+      },
+      "web_url": "https://codespaces.github.com/hot-space-001"
     },
     {
       "name": "warm-space-002",
@@ -54,15 +63,24 @@ generate_codespaces_fixture() {
       "state": "Shutdown",
       "created_at": "$yesterday_created",
       "updated_at": "$yesterday_updated",
+      "last_used_at": "$yesterday_updated",
       "git_status": {
         "ahead": 0,
         "behind": 0,
         "has_uncommitted_changes": false,
-        "has_unpushed_changes": false
+        "has_unpushed_changes": false,
+        "ref": "main"
       },
       "machine": {
         "display_name": "4 cores, 16 GB RAM"
-      }
+      },
+      "repository": {
+        "full_name": "testorg/testrepo"
+      },
+      "owner": {
+        "login": "testuser"
+      },
+      "web_url": "https://codespaces.github.com/warm-space-002"
     },
     {
       "name": "cold-space-003",
@@ -70,17 +88,27 @@ generate_codespaces_fixture() {
       "state": "Shutdown",
       "created_at": "$two_weeks_ago_created",
       "updated_at": "$two_weeks_ago_updated",
+      "last_used_at": "$two_weeks_ago_updated",
       "git_status": {
         "ahead": 2,
         "behind": 1,
         "has_uncommitted_changes": true,
-        "has_unpushed_changes": true
+        "has_unpushed_changes": true,
+        "ref": "main"
       },
       "machine": {
         "display_name": "2 cores, 8 GB RAM"
-      }
+      },
+      "repository": {
+        "full_name": "testorg/testrepo"
+      },
+      "owner": {
+        "login": "testuser"
+      },
+      "web_url": "https://codespaces.github.com/cold-space-003"
     }
-  ]
+  ],
+  "total_count": 3
 }
 EOF
 }
@@ -208,18 +236,89 @@ case "$*" in
         exit 0
         ;;
 
+    # Handle API call for individual codespace details with -q filter
+    "api /user/codespaces/"*" -q "*)
+        # Extract the jq query pattern (everything after -q)
+        CODESPACE_NAME=$(echo "$*" | sed 's/api \/user\/codespaces\///' | sed 's/ -q .*//')
+        JQ_QUERY=$(echo "$*" | sed 's/.*-q //')
+
+        # Get the codespace data
+        if [[ -f "${FIXTURES}/codespaces.json" ]]; then
+            RESULT=$(cat "${FIXTURES}/codespaces.json" | command jq --arg name "$CODESPACE_NAME" '.codespaces | map(select(.name == $name)) | .[0] // empty' 2>/dev/null)
+            if [[ -n "$RESULT" && "$RESULT" != "null" ]]; then
+                # Add web_url if not present and apply the jq query
+                echo "$RESULT" | command jq -r '. + {web_url: "https://codespaces.github.com/\(.name)"} | '"$JQ_QUERY"
+                exit 0
+            fi
+        fi
+
+        # Default response - just web_url for most queries
+        echo "https://codespaces.github.com/$CODESPACE_NAME"
+        exit 0
+        ;;
+
+    # Handle API call for individual codespace details (full JSON)
+    "api /user/codespaces/"*)
+        # Extract codespace name from path
+        CODESPACE_NAME=$(echo "$*" | sed 's/api \/user\/codespaces\///' | awk '{print $1}')
+
+        # Return matching codespace from fixture or default
+        if [[ -f "${FIXTURES}/codespaces.json" ]]; then
+            # Try to find the matching codespace
+            RESULT=$(cat "${FIXTURES}/codespaces.json" | command jq --arg name "$CODESPACE_NAME" '.codespaces | map(select(.name == $name)) | .[0] // empty' 2>/dev/null)
+            if [[ -n "$RESULT" && "$RESULT" != "null" ]]; then
+                # Add web_url if not present
+                echo "$RESULT" | command jq '. + {web_url: "https://codespaces.github.com/\(.name)"}'
+                exit 0
+            fi
+        fi
+
+        # Default single codespace response
+        echo '{
+          "name": "'"$CODESPACE_NAME"'",
+          "display_name": "Test Codespace",
+          "state": "Available",
+          "created_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+          "updated_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+          "web_url": "https://codespaces.github.com/'"$CODESPACE_NAME"'",
+          "git_status": {
+            "ahead": 0,
+            "behind": 0,
+            "has_uncommitted_changes": false,
+            "has_unpushed_changes": false,
+            "ref": "main"
+          },
+          "machine": {
+            "display_name": "2 cores, 8 GB RAM"
+          },
+          "repository": {
+            "full_name": "testorg/testrepo"
+          },
+          "owner": {
+            "login": "testuser"
+          }
+        }'
+        exit 0
+        ;;
+
+    "codespace view"*)
+        # Handle codespace view for display name
+        echo '{"displayName": "Test Codespace"}'
+        exit 0
+        ;;
+
     "codespace stop"*)
-        echo "Stopping codespace: $3"
+        # Silent success for stop command (output would pollute JSON)
         exit 0
         ;;
 
     "codespace delete"*)
-        echo "Deleting codespace: $3"
+        # Silent success for delete command
         exit 0
         ;;
 
     "codespace code"*|"codespace ssh"*)
-        echo "Opening codespace: ${4:-$3}"
+        # Silent success for code/ssh commands (output would pollute JSON in tests)
         exit 0
         ;;
 
