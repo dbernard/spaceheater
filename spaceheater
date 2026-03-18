@@ -499,31 +499,242 @@ LOADED_CONFIG_FILES=""
 # ============================================================================
 
 error() {
-  echo -e "${RED}${ICON_ERROR} Error: $*${NC}" >&2
+  local message="$*"
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Output JSON error format
+    jq -n --arg msg "$message" \
+      '{"error": true, "message": $msg, "timestamp": now | todate}' >&2
+  else
+    echo -e "${RED}${ICON_ERROR} Error: $message${NC}" >&2
+  fi
   exit 1
 }
 
 info() {
-  echo -e "${BLUE}${ICON_INFO} $*${NC}"
+  # Skip info messages in JSON mode (they would corrupt the JSON output)
+  if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+    echo -e "${BLUE}${ICON_INFO} $*${NC}"
+  fi
 }
 
 success() {
-  echo -e "${GREEN}${ICON_SUCCESS} $*${NC}"
+  # Skip success messages in JSON mode (they would corrupt the JSON output)
+  if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+    echo -e "${GREEN}${ICON_SUCCESS} $*${NC}"
+  fi
 }
 
 warn() {
-  echo -e "${YELLOW}${ICON_WARNING} $*${NC}"
+  # Output warnings to stderr in JSON mode to not corrupt stdout JSON
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    jq -n --arg msg "$*" \
+      '{"warning": true, "message": $msg, "timestamp": now | todate}' >&2
+  else
+    echo -e "${YELLOW}${ICON_WARNING} $*${NC}"
+  fi
 }
 
 debug() {
   if [ "$DEBUG" = "true" ]; then
-    echo -e "${BLUE}[DEBUG]${NC} $*" >&2
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      # Output debug to stderr in JSON format
+      jq -n --arg msg "$*" \
+        '{"debug": true, "message": $msg, "timestamp": now | todate}' >&2
+    else
+      echo -e "${BLUE}[DEBUG]${NC} $*" >&2
+    fi
   fi
 }
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+# ============================================================================
+# JSON OUTPUT UTILITIES
+# ============================================================================
+
+# Returns JQ filter expression for calculating temperature from codespace state
+# This centralizes the temperature logic for reuse across commands
+get_temperature_jq_filter() {
+  cat <<'EOF'
+(
+  if .state == "Available" then "hot"
+  elif .state == "Shutdown" and $is_git_clean and $activity_age_days <= 3 then "warm"
+  elif .state | test("Starting|Provisioning|ShuttingDown|Stopping") then "transitioning"
+  else "cold"
+  end
+)
+EOF
+}
+
+# Returns JQ filter for determining if git status is clean
+get_git_clean_jq_filter() {
+  cat <<'EOF'
+((.git_status.has_uncommitted_changes // false) == false and
+ (.git_status.has_unpushed_changes // false) == false and
+ (.git_status.ahead // 0) == 0)
+EOF
+}
+
+# Returns JQ filter for normalizing git status with defaults
+get_git_status_normalization_filter() {
+  cat <<'EOF'
+{
+  has_uncommitted_changes: (.git_status.has_uncommitted_changes // false),
+  has_unpushed_changes: (.git_status.has_unpushed_changes // false),
+  ahead: (.git_status.ahead // 0),
+  behind: (.git_status.behind // 0),
+  ref: (.git_status.ref // "unknown")
+}
+EOF
+}
+
+# Returns JQ filter for calculating age fields from timestamps
+get_age_calculation_filter() {
+  cat <<'EOF'
+# Calculate age in seconds and days
+(($current_time | fromdate) - (.created_at | fromdate)) as $age_seconds |
+($age_seconds / 86400 | floor) as $age_days |
+
+# Calculate last activity (prefer last_used_at over updated_at over created_at)
+(.last_used_at // .updated_at // .created_at) as $last_activity |
+(($current_time | fromdate) - ($last_activity | fromdate)) as $activity_age_seconds |
+($activity_age_seconds / 86400 | floor) as $activity_age_days |
+EOF
+}
+
+# Returns JQ filter for common codespace fields
+# Usage: get_codespace_json_fields [include_optional]
+get_codespace_json_fields() {
+  local include_optional="${1:-true}"
+
+  cat <<'EOF'
+{
+  name: .name,
+  display_name: .display_name,
+  state: .state,
+  temperature: TEMPERATURE_PLACEHOLDER,
+  is_git_clean: $is_git_clean,
+  age_days: $age_days,
+  age_seconds: $age_seconds,
+  last_activity: $last_activity,
+  activity_age_days: $activity_age_days,
+  activity_age_seconds: $activity_age_seconds,
+  created_at: .created_at,
+  updated_at: .updated_at,
+  last_used_at: .last_used_at,
+  git_status: GIT_STATUS_PLACEHOLDER,
+  machine_type: .machine.display_name
+EOF
+
+  # Include optional fields if requested
+  if [ "$include_optional" = "true" ]; then
+    cat <<'EOF'
+  ,
+  repository: .repository.full_name,
+  owner: .owner.login,
+  web_url: .web_url,
+  recent_folders: .recent_folders,
+  environment: .environment,
+  prebuild: .prebuild,
+  location: .location,
+  runtime_constraints: .runtime_constraints
+EOF
+  fi
+
+  echo "}"
+}
+
+# Wrapper function for JSON output from commands
+# Usage: output_json_or_text <json_jq_filter> <text_output_function>
+output_json_or_text() {
+  local json_filter="$1"
+  local text_function="$2"
+
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Output JSON using the provided filter
+    eval "$json_filter"
+  else
+    # Call the text output function
+    $text_function
+  fi
+}
+
+# Build complete JQ filter for codespace with temperature
+# This combines all the utility filters into a complete transformation
+build_codespace_json_filter() {
+  local include_optional="${1:-true}"
+
+  # Get the component filters
+  local temp_filter=$(get_temperature_jq_filter)
+  local git_clean_filter=$(get_git_clean_jq_filter)
+  local git_status_filter=$(get_git_status_normalization_filter)
+  local age_filter=$(get_age_calculation_filter)
+  local fields_filter=$(get_codespace_json_fields "$include_optional")
+
+  # Replace placeholders with actual filters
+  fields_filter="${fields_filter/TEMPERATURE_PLACEHOLDER/$temp_filter}"
+  fields_filter="${fields_filter/GIT_STATUS_PLACEHOLDER/$git_status_filter}"
+
+  # Combine all filters
+  cat <<EOF
+$age_filter
+$git_clean_filter as \$is_git_clean |
+$fields_filter
+EOF
+}
+
+# Output JSON for single codespace commands (start, stop, delete, etc.)
+# Usage: output_single_codespace_json <action> <codespace_name> [success_message]
+output_single_codespace_json() {
+  local action="$1"
+  local codespace_name="$2"
+  local message="${3:-}"
+
+  # Get the codespace details and transform to JSON
+  local codespace_filter=$(build_codespace_json_filter false)
+
+  gh api "/user/codespaces/$codespace_name" | jq --arg action "$action" --arg msg "$message" "
+    (now | todate) as \$current_time |
+    {
+      action: \$action,
+      success: true,
+      message: (if \$msg != \"\" then \$msg else null end),
+      codespace: (. | $codespace_filter),
+      timestamp: \$current_time
+    }
+  "
+}
+
+# Output JSON for multiple codespace operations (create, clean, etc.)
+# Usage: output_multiple_codespaces_json <action> <codespace_names_array>
+output_multiple_codespaces_json() {
+  local action="$1"
+  shift
+  local -a codespace_names=("$@")
+
+  # Build array of codespace details
+  local results="[]"
+  for name in "${codespace_names[@]}"; do
+    local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+    results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
+  done
+
+  # Transform and output
+  local codespace_filter=$(build_codespace_json_filter false)
+
+  echo "$results" | jq --arg action "$action" "
+    (now | todate) as \$current_time |
+    {
+      action: \$action,
+      success: true,
+      codespaces: (. | map($codespace_filter)),
+      count: . | length,
+      timestamp: \$current_time
+    }
+  "
+}
 
 # Date calculation helper functions
 calculate_age_days() {
@@ -707,11 +918,14 @@ cmd_create() {
 
   local created=0
   local failed=0
+  local -a created_names=()
 
   for i in $(seq 1 "$count"); do
-    info "[$i/$count] Creating codespace..."
-
-    debug "Creating codespace with: repo=$REPO branch=$BRANCH machine=$effective_machine"
+    # Don't show progress output in JSON mode
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "[$i/$count] Creating codespace..."
+      debug "Creating codespace with: repo=$REPO branch=$BRANCH machine=$effective_machine"
+    fi
 
     # Build args array with only explicitly set values
     local create_args=(
@@ -749,11 +963,16 @@ cmd_create() {
     local codespace_name=$(echo "$output" | tail -1 | grep -E '^[a-z0-9]+-[a-z0-9]+-[a-z0-9-]+$' || echo "")
 
     if [ -n "$codespace_name" ]; then
-      success "  ${ICON_CHECK} Created: $codespace_name"
+      if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+        success "  ${ICON_CHECK} Created: $codespace_name"
+      fi
       created=$((created + 1))
+      created_names+=("$codespace_name")
     else
-      warn "  ${ICON_CROSS} Failed to create codespace"
-      echo "  Output: $output"
+      if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+        warn "  ${ICON_CROSS} Failed to create codespace"
+        echo "  Output: $output"
+      fi
       failed=$((failed + 1))
     fi
 
@@ -763,6 +982,18 @@ cmd_create() {
     fi
   done
 
+  # Handle JSON output
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    if [ ${#created_names[@]} -gt 0 ]; then
+      output_multiple_codespaces_json "create" "${created_names[@]}"
+    else
+      # Output error JSON if all creations failed
+      echo "{\"action\":\"create\",\"success\":false,\"error\":\"Failed to create any codespaces\",\"requested_count\":$count,\"created_count\":0,\"failed_count\":$failed,\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    fi
+    return
+  fi
+
+  # Original text output
   echo
   success "Created $created codespace(s)"
   if [ "$failed" -gt 0 ]; then
@@ -777,6 +1008,32 @@ cmd_create() {
 
 cmd_list() {
   init_repo_config
+
+  # Handle JSON output if requested
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Build the complete JQ filter using our utilities
+    local codespace_filter=$(build_codespace_json_filter true)
+
+    # Use jq to transform the codespaces with our reusable filters
+    get_all_codespaces | jq --arg repo "$REPO" --arg branch "$BRANCH" "
+      # Current timestamp for calculations
+      (now | todate) as \$current_time |
+
+      # Main output structure
+      {
+        codespaces: (.codespaces | map(
+          $codespace_filter
+        ) | sort_by(.created_at) | reverse),
+        repository: \$repo,
+        branch: \$branch,
+        timestamp: \$current_time,
+        total_count: .total_count
+      }
+    "
+    return
+  fi
+
+  # Original formatted output
   echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} - Codespaces for ${CYAN}$REPO${NC}"
   echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
 
@@ -989,7 +1246,48 @@ cmd_start() {
 
     cmd_args+=(-c "$codespace_name")
   else
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      error "JSON output requires a codespace name or search term"
+    fi
     info "Select a codespace to start..." >&2
+  fi
+
+  # Handle JSON output if requested
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Determine connection URL and method
+    local connection_url=""
+    case "$CONNECT_METHOD" in
+      browser|web)
+        connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
+        ;;
+      ssh)
+        connection_url="ssh://$codespace_name"
+        ;;
+      code|vscode)
+        connection_url="vscode://github.codespaces/$codespace_name"
+        ;;
+    esac
+
+    # Build the complete JQ filter using our utilities
+    local codespace_filter=$(build_codespace_json_filter false)
+
+    # Output JSON with codespace details
+    gh api "/user/codespaces/$codespace_name" | jq \
+      --arg action "start" \
+      --arg connection_url "$connection_url" \
+      --arg connection_method "$CONNECT_METHOD" \
+      "
+      (now | todate) as \$current_time |
+      {
+        action: \$action,
+        success: true,
+        codespace: (. | $codespace_filter),
+        connection_url: \$connection_url,
+        connection_method: \$connection_method,
+        timestamp: \$current_time
+      }
+    "
+    return
   fi
 
   # Connect based on configured method
@@ -1013,13 +1311,54 @@ cmd_start() {
 cmd_autostart() {
   init_repo_config
 
-  info "Finding a clean codespace to start..."
+  if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+    info "Finding a clean codespace to start..."
+  fi
 
   # Auto-select the best clean codespace
   local codespace_name=$(auto_select_codespace)
 
   debug "Selected codespace: $codespace_name"
   local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)"
+
+  # Handle JSON output if requested
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Determine connection URL and method
+    local connection_url=""
+    case "$CONNECT_METHOD" in
+      browser|web)
+        connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
+        ;;
+      ssh)
+        connection_url="ssh://$codespace_name"
+        ;;
+      code|vscode)
+        connection_url="vscode://github.codespaces/$codespace_name"
+        ;;
+    esac
+
+    # Build the complete JQ filter using our utilities
+    local codespace_filter=$(build_codespace_json_filter false)
+
+    # Output JSON with codespace details
+    gh api "/user/codespaces/$codespace_name" | jq \
+      --arg action "autostart" \
+      --arg connection_url "$connection_url" \
+      --arg connection_method "$CONNECT_METHOD" \
+      "
+      (now | todate) as \$current_time |
+      {
+        action: \$action,
+        success: true,
+        codespace: (. | $codespace_filter),
+        connection_url: \$connection_url,
+        connection_method: \$connection_method,
+        timestamp: \$current_time
+      }
+    "
+    return
+  fi
+
   info "Starting codespace: ${display_name:-$codespace_name}..."
 
   # Connect based on configured method
@@ -1050,34 +1389,85 @@ cmd_stop() {
 
   # Special case: stop all running codespaces
   if [ "$search_term" = "all" ]; then
-    info "Finding all running codespaces to stop..."
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Finding all running codespaces to stop..."
+    fi
 
     # Get all running codespaces
     local running_codespaces=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) | .[] | "\(.name)\t\(.display_name // .name)"')
 
     if [ -z "$running_codespaces" ]; then
+      if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+        echo '{
+          "action": "stop",
+          "success": true,
+          "codespaces": [],
+          "count": 0,
+          "message": "No running codespaces found",
+          "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
+        }'
+        return 0
+      fi
       info "No running codespaces found"
       return 0
     fi
 
     # Count how many we're stopping
     local count=$(echo "$running_codespaces" | wc -l | tr -d ' ')
-    info "Found $count running codespace(s)"
-    echo
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Found $count running codespace(s)"
+      echo
+    fi
 
     # Stop each codespace
     local stopped=0
     local failed=0
+    local -a stopped_names=()
     while IFS=$'\t' read -r name display_name; do
-      info "Stopping: $display_name"
+      if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+        info "Stopping: $display_name"
+      fi
       if gh codespace stop -c "$name" 2>/dev/null; then
-        success "  ${ICON_CHECK} Stopped"
+        if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+          success "  ${ICON_CHECK} Stopped"
+        fi
         stopped=$((stopped + 1))
+        stopped_names+=("$name")
       else
-        warn "  ${ICON_CROSS} Failed to stop"
+        if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+          warn "  ${ICON_CROSS} Failed to stop"
+        fi
         failed=$((failed + 1))
       fi
     done <<< "$running_codespaces"
+
+    # Handle JSON output if requested
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      # Build array of stopped codespace details
+      local results="[]"
+      for name in "${stopped_names[@]}"; do
+        local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+        if [ "$codespace_data" != "{}" ]; then
+          results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
+        fi
+      done
+
+      # Transform and output
+      local codespace_filter=$(build_codespace_json_filter false)
+
+      echo "$results" | jq --arg action "stop" --arg msg "Stopped $stopped codespace(s)" "
+        (now | todate) as \$current_time |
+        {
+          action: \$action,
+          success: true,
+          codespaces: (. | map($codespace_filter)),
+          count: . | length,
+          message: \$msg,
+          timestamp: \$current_time
+        }
+      "
+      return 0
+    fi
 
     echo
     success "Stopped $stopped codespace(s)"
@@ -1088,7 +1478,9 @@ cmd_stop() {
   fi
 
   if [ -z "$search_term" ]; then
-    info "Finding running codespace to stop..."
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Finding running codespace to stop..."
+    fi
 
     # Get the most recently used running codespace
     local codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) |
@@ -1109,6 +1501,42 @@ cmd_stop() {
   fi
 
   local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName 2>/dev/null)"
+
+  # Handle JSON output if requested
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Stop the codespace first
+    if gh codespace stop -c "$codespace_name" 2>/dev/null; then
+      # Build the complete JQ filter using our utilities
+      local codespace_filter=$(build_codespace_json_filter false)
+
+      # Output JSON with codespace details
+      gh api "/user/codespaces/$codespace_name" | jq \
+        --arg action "stop" \
+        --arg msg "Stopped successfully" \
+        "
+        (now | todate) as \$current_time |
+        {
+          action: \$action,
+          success: true,
+          codespace: (. | $codespace_filter),
+          message: \$msg,
+          timestamp: \$current_time
+        }
+      "
+    else
+      # Output error as JSON
+      echo '{
+        "action": "stop",
+        "success": false,
+        "message": "Failed to stop codespace",
+        "codespace_name": "'"$codespace_name"'",
+        "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
+      }'
+      exit 1
+    fi
+    return
+  fi
+
   info "Stopping codespace: ${display_name:-$codespace_name}..."
 
   if gh codespace stop -c "$codespace_name"; then
@@ -1140,10 +1568,65 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
       .[] | "\(.name)\t\(.display_name // .name)\t\(.created_at)"')
 
   if [ -z "$to_delete" ]; then
-    success "No codespaces older than $days days found."
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      echo "{\"action\":\"clean\",\"success\":true,\"deleted_count\":0,\"age_threshold_days\":$days,\"message\":\"No codespaces older than $days days found\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    else
+      success "No codespaces older than $days days found."
+    fi
     return 0
   fi
 
+  # Count how many we found
+  local total_found=$(echo "$to_delete" | wc -l | tr -d ' ')
+
+  # Handle JSON output - skip confirmation and delete automatically
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    local -a deleted_names=()
+    local deleted=0
+    local failed=0
+
+    # First, fetch details of all codespaces to delete BEFORE deletion
+    local results="[]"
+    while IFS=$'\t' read -r name display_name created_at; do
+      local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+      if [ "$codespace_data" != "{}" ]; then
+        results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
+      fi
+    done <<< "$to_delete"
+
+    # Now delete the codespaces
+    while IFS=$'\t' read -r name display_name created_at; do
+      if gh codespace delete -c "$name" --force 2>/dev/null; then
+        deleted=$((deleted + 1))
+        deleted_names+=("$name")
+      else
+        failed=$((failed + 1))
+      fi
+    done <<< "$to_delete"
+
+    if [ ${#deleted_names[@]} -gt 0 ]; then
+      # Transform and output with age threshold - filter to only successfully deleted ones
+      local codespace_filter=$(build_codespace_json_filter false)
+      echo "$results" | jq --arg days "$days" --argjson deleted_count "$deleted" --argjson failed_count "$failed" --argjson total_found "$total_found" '
+        (now | todate) as $current_time |
+        {
+          action: "clean",
+          success: true,
+          codespaces: (. | map('"$codespace_filter"')),
+          deleted_count: $deleted_count,
+          failed_count: $failed_count,
+          age_threshold_days: ($days | tonumber),
+          total_found: $total_found,
+          timestamp: $current_time
+        }
+      '
+    else
+      echo "{\"action\":\"clean\",\"success\":false,\"error\":\"Failed to delete any codespaces\",\"deleted_count\":0,\"failed_count\":$failed,\"age_threshold_days\":$days,\"total_found\":$total_found,\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    fi
+    return
+  fi
+
+  # Original text output with confirmation
   echo "$to_delete" | while IFS=$'\t' read -r name display_name created_at; do
     echo -e "  - $display_name (created: $created_at)"
   done
@@ -1191,6 +1674,17 @@ cmd_delete() {
   # Get display name for the selected codespace
   local display_name=$(echo "$matches" | grep "^$codespace_name" | cut -f2)
 
+  # Handle JSON output - skip confirmation and interactive output
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    if gh codespace delete -c "$codespace_name" --force 2>/dev/null; then
+      output_single_codespace_json "delete" "$codespace_name" "Codespace deleted successfully"
+    else
+      echo "{\"action\":\"delete\",\"success\":false,\"error\":\"Failed to delete codespace\",\"codespace_name\":\"$codespace_name\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+    fi
+    return
+  fi
+
+  # Original text output with confirmation
   info "Deleting codespace: $display_name"
 
   # Add confirmation for safety
@@ -1223,21 +1717,46 @@ cmd_config_init() {
   fi
 
   # Check if file already exists
+  local file_existed=false
+  local overwritten=false
   if [ -f "$config_file" ]; then
-    warn "Config file already exists: $config_file"
-    read -p "Overwrite? [y/N] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-      info "Cancelled."
-      return 0
+    file_existed=true
+    # Skip interactive prompt in JSON mode
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      # In JSON mode, don't overwrite by default - return error
+      jq -n \
+        --arg file "$config_file" \
+        --arg location "$target_location" \
+        '{
+          success: false,
+          error: "Config file already exists",
+          file_path: $file,
+          location: $location,
+          overwritten: false,
+          timestamp: (now | todate)
+        }'
+      return 1
+    else
+      warn "Config file already exists: $config_file"
+      read -p "Overwrite? [y/N] " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        info "Cancelled."
+        return 0
+      fi
+      overwritten=true
     fi
   fi
 
   # Create parent directory if needed
   local config_dir=$(dirname "$config_file")
+  local dir_created=false
   if [ ! -d "$config_dir" ] && [ "$config_dir" != "." ]; then
     mkdir -p "$config_dir"
-    info "Created directory: $config_dir"
+    dir_created=true
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Created directory: $config_dir"
+    fi
   fi
 
   # Create template config file
@@ -1269,39 +1788,91 @@ cmd_config_init() {
 # DEBUG=false
 EOF
 
-  success "Created config template: $config_file"
-  echo ""
-  info "Edit this file to customize your configuration."
-  info "Lines starting with # are comments and will be ignored."
-  echo ""
-  info "Config file precedence (highest to lowest):"
-  info "  1. Environment variables (SPACEHEATER_*)"
-  info "  2. Repository config (.spaceheater.conf)"
-  info "  3. User config (~/.config/spaceheater/config)"
-  info "  4. System config (/etc/spaceheater/config)"
-  info "  5. Built-in defaults"
-  echo ""
-  info "To edit: spaceheater config edit"
+  # Get absolute path for JSON output
+  local abs_path=$(cd "$(dirname "$config_file")" && pwd)/$(basename "$config_file")
+
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    jq -n \
+      --arg file "$abs_path" \
+      --arg location "$target_location" \
+      --argjson dir_created "$dir_created" \
+      --argjson file_existed "$file_existed" \
+      --argjson overwritten "$overwritten" \
+      '{
+        success: true,
+        message: "Created config template",
+        file_path: $file,
+        location: $location,
+        directory_created: $dir_created,
+        file_existed: $file_existed,
+        overwritten: $overwritten,
+        template: "default",
+        timestamp: (now | todate)
+      }'
+  else
+    success "Created config template: $config_file"
+    echo ""
+    info "Edit this file to customize your configuration."
+    info "Lines starting with # are comments and will be ignored."
+    echo ""
+    info "Config file precedence (highest to lowest):"
+    info "  1. Environment variables (SPACEHEATER_*)"
+    info "  2. Repository config (.spaceheater.conf)"
+    info "  3. User config (~/.config/spaceheater/config)"
+    info "  4. System config (/etc/spaceheater/config)"
+    info "  5. Built-in defaults"
+    echo ""
+    info "To edit: spaceheater config edit"
+  fi
 }
 
 cmd_config_edit() {
   local user_config="${XDG_CONFIG_HOME:-$HOME/.config}/spaceheater/config"
+  local config_type="user"
 
   # Check if in a git repo for .spaceheater.conf
+  local repo_config_available=false
   if git rev-parse --git-dir &>/dev/null 2>&1 && [ -f ".spaceheater.conf" ]; then
-    info "Found repository config: .spaceheater.conf"
-    read -p "Edit repository config instead of user config? [Y/n] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    repo_config_available=true
+    if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+      info "Found repository config: .spaceheater.conf"
+      read -p "Edit repository config instead of user config? [Y/n] " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        user_config=".spaceheater.conf"
+        config_type="repository"
+      fi
+    else
+      # In JSON mode, prefer repository config if it exists
       user_config=".spaceheater.conf"
+      config_type="repository"
     fi
   fi
 
   # Create config if it doesn't exist
+  local file_exists=true
   if [ ! -f "$user_config" ]; then
-    info "Config file doesn't exist. Creating template..."
-    cmd_config_init "$user_config"
-    echo ""
+    file_exists=false
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      # In JSON mode, return info about non-existent file
+      jq -n \
+        --arg file "$user_config" \
+        --arg config_type "$config_type" \
+        '{
+          success: false,
+          error: "Config file does not exist",
+          message: "Use \"spaceheater config init\" to create a config file first",
+          file_path: $file,
+          config_type: $config_type,
+          file_exists: false,
+          timestamp: (now | todate)
+        }'
+      return 1
+    else
+      info "Config file doesn't exist. Creating template..."
+      cmd_config_init "$user_config"
+      echo ""
+    fi
   fi
 
   # Use $EDITOR or fall back to sensible defaults
@@ -1314,113 +1885,343 @@ cmd_config_edit() {
     elif command -v vi &>/dev/null; then
       editor="vi"
     else
-      error "No editor found. Set EDITOR environment variable or install nano/vim."
+      if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+        jq -n \
+          --arg file "$user_config" \
+          '{
+            success: false,
+            error: "No editor found",
+            message: "Set EDITOR environment variable or install nano/vim",
+            file_path: $file,
+            timestamp: (now | todate)
+          }'
+        return 1
+      else
+        error "No editor found. Set EDITOR environment variable or install nano/vim."
+      fi
     fi
   fi
 
-  info "Opening config file in $editor..."
-  "$editor" "$user_config"
+  # Get absolute path for JSON output
+  local abs_path=$(cd "$(dirname "$user_config")" && pwd)/$(basename "$user_config")
 
-  success "Config file updated!"
-  info "Run 'spaceheater config' to see current configuration."
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # In JSON mode, don't actually open the editor - return info about what would be edited
+    jq -n \
+      --arg file "$abs_path" \
+      --arg editor "$editor" \
+      --arg config_type "$config_type" \
+      --argjson file_exists "$file_exists" \
+      --argjson repo_available "$repo_config_available" \
+      '{
+        success: true,
+        message: "Config edit information (editor not opened in JSON mode)",
+        file_path: $file,
+        editor: $editor,
+        config_type: $config_type,
+        file_exists: $file_exists,
+        repository_config_available: $repo_available,
+        note: "Use text output mode to interactively edit the config file",
+        timestamp: (now | todate)
+      }'
+  else
+    info "Opening config file in $editor..."
+    "$editor" "$user_config"
+
+    success "Config file updated!"
+    info "Run 'spaceheater config' to see current configuration."
+  fi
 }
 
 cmd_config() {
-  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER CONFIGURATION${NC}"
-  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Helper function to determine the source of a configuration value
+    get_config_source() {
+      local var_name="$1"
+      local env_var="SPACEHEATER_${var_name}"
 
-  # Show loaded config files
-  echo -e "${BOLD}Loaded Config Files:${NC}"
-  if [ -z "$LOADED_CONFIG_FILES" ]; then
-    echo -e "  ${DIM}No config files found (using environment variables and defaults)${NC}"
-  else
-    while IFS= read -r config_file; do
-      echo -e "  ${GREEN}${ICON_CHECK}${NC} $config_file"
-    done <<< "$LOADED_CONFIG_FILES"
-  fi
-  echo ""
-
-  echo -e "${BOLD}Repository Settings:${NC}"
-  echo -e "  ${ICON_REPO} SPACEHEATER_REPO:              ${CYAN}${SPACEHEATER_REPO:-<auto-detect from git>}${NC}"
-  echo -e "  ${ICON_BRANCH} SPACEHEATER_BRANCH:            ${CYAN}${SPACEHEATER_BRANCH:-<auto-detect from repo>}${NC}"
-  echo ""
-
-  echo -e "${BOLD}Connection Settings:${NC}"
-  echo -e "  ${ICON_ARROW_RIGHT} SPACEHEATER_CONNECT:           ${CYAN}${CONNECT_METHOD:-browser}${NC} ${DIM}(options: browser, ssh, code)${NC}"
-  echo ""
-
-  echo -e "${BOLD}Codespace Overrides ${DIM}(optional):${NC}"
-  echo -e "  ${ICON_MACHINE} SPACEHEATER_MACHINE:           ${CYAN}${MACHINE:-<use devcontainer or GitHub default>}${NC}"
-  echo -e "  ${ICON_TIMER} SPACEHEATER_RETENTION:         ${CYAN}${RETENTION:-<use GitHub default>}${NC}"
-  echo -e "  ${ICON_TIMER} SPACEHEATER_IDLE_TIMEOUT:      ${CYAN}${IDLE_TIMEOUT:-<use GitHub/org default>}${NC}"
-  echo -e "  ${ICON_REPO} SPACEHEATER_DEVCONTAINER_PATH: ${CYAN}${DEVCONTAINER_PATH:-<auto-detect>}${NC}"
-  echo -e "  ${ICON_REGION} SPACEHEATER_LOCATION:          ${CYAN}${LOCATION:-<auto-detect closest region>}${NC}"
-  echo -e "  ${ICON_CALENDAR} SPACEHEATER_DISPLAY_NAME:      ${CYAN}${DISPLAY_NAME:-<GitHub-generated>}${NC}"
-  echo ""
-
-  echo -e "${BOLD}UI Settings:${NC}"
-  echo -e "  ${ICON_INFO} SPACEHEATER_UI_STYLE:          ${CYAN}${SPACEHEATER_UI_STYLE:-unicode}${NC} ${DIM}(options: unicode, plain, simple)${NC}"
-  echo ""
-
-  echo -e "${BOLD}Debug Settings:${NC}"
-  echo -e "  ${ICON_INFO} SPACEHEATER_DEBUG:             ${CYAN}${DEBUG:-false}${NC}"
-  echo ""
-
-  echo -e "${BOLD}Current Detection:${NC}"
-
-  # Try to detect and show current values
-  if detect_repo &>/dev/null; then
-    local detected_repo=$(detect_repo)
-    echo -e "  ${ICON_CHECK} Detected Repository:           ${GREEN}$detected_repo${NC}"
-    echo -e "  ${ICON_CHECK} Detected Branch:               ${GREEN}$(detect_default_branch)${NC}"
-
-    # Try to show devcontainer info if we're in the repo
-    if [ -f ".devcontainer/devcontainer.json" ]; then
-      echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer/devcontainer.json (found)${NC}"
-
-      # Try to extract hostRequirements if jq is available
-      if command -v jq &>/dev/null; then
-        local cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
-        local memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
-        if [ -n "$cpus" ] || [ -n "$memory" ]; then
-          echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
-        fi
+      # Check if set in environment
+      if [[ " $ENV_VARS_SET " =~ " $env_var " ]]; then
+        echo "environment"
+      # Check if value is set (from config file)
+      elif [ -n "${!env_var:-}" ]; then
+        echo "config_file"
+      else
+        echo "default"
       fi
-    elif [ -f ".devcontainer.json" ]; then
-      echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer.json (found)${NC}"
-    else
-      echo -e "  ${ICON_INFO} Devcontainer:                  ${DIM}<none - will use GitHub default image>${NC}"
-    fi
-  else
-    echo -e "  ${ICON_CROSS} Detected Repository:           ${DIM}<none - not in a git repo>${NC}"
-  fi
+    }
 
-  echo -e "\n${DIM}────────────────────────────────────────────────────────────────${NC}"
-  echo -e "${BOLD}${ICON_INFO} Configuration Philosophy:${NC}"
-  echo -e "  Spaceheater respects your repository's devcontainer and GitHub's defaults."
-  echo -e "  Only set environment variables when you need to override these defaults."
-  echo ""
-  echo -e "${BOLD}${ICON_NEXT} Available Commands:${NC}"
-  echo -e "  ${CYAN}spaceheater config init${NC}      Create a config file template"
-  echo -e "  ${CYAN}spaceheater config edit${NC}      Edit your config file"
-  echo -e "  ${CYAN}spaceheater config validate${NC}  Validate config file syntax"
-  echo ""
-  echo -e "${BOLD}${ICON_NEXT} Configuration Precedence (highest to lowest):${NC}"
-  echo -e "  ${DIM}1. CLI arguments${NC}"
-  echo -e "  ${DIM}2. Environment variables (SPACEHEATER_*)${NC}"
-  echo -e "  ${DIM}3. Repository config (.spaceheater.conf)${NC}"
-  echo -e "  ${DIM}4. User config (~/.config/spaceheater/config)${NC}"
-  echo -e "  ${DIM}5. System config (/etc/spaceheater/config)${NC}"
-  echo -e "  ${DIM}6. Built-in defaults${NC}"
+    # Collect loaded config files
+    local config_files_json="[]"
+    if [ -n "$LOADED_CONFIG_FILES" ]; then
+      while IFS= read -r config_file; do
+        config_files_json=$(echo "$config_files_json" | jq --arg file "$config_file" '. + [$file]')
+      done <<< "$LOADED_CONFIG_FILES"
+    fi
+
+    # Detect current repository values
+    local detected_repo=""
+    local detected_branch=""
+    local devcontainer_path=""
+    local devcontainer_cpus=""
+    local devcontainer_memory=""
+
+    if detect_repo &>/dev/null; then
+      detected_repo=$(detect_repo)
+      detected_branch=$(detect_default_branch)
+
+      if [ -f ".devcontainer/devcontainer.json" ]; then
+        devcontainer_path=".devcontainer/devcontainer.json"
+        if command -v jq &>/dev/null; then
+          devcontainer_cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
+          devcontainer_memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
+        fi
+      elif [ -f ".devcontainer.json" ]; then
+        devcontainer_path=".devcontainer.json"
+      fi
+    fi
+
+    # Build JSON output
+    jq -n \
+      --argjson config_files "$config_files_json" \
+      --arg repo_value "${SPACEHEATER_REPO:-}" \
+      --arg repo_source "$(get_config_source REPO)" \
+      --arg branch_value "${SPACEHEATER_BRANCH:-}" \
+      --arg branch_source "$(get_config_source BRANCH)" \
+      --arg connect_value "${CONNECT_METHOD:-browser}" \
+      --arg connect_source "$(get_config_source CONNECT)" \
+      --arg machine_value "${MACHINE:-}" \
+      --arg machine_source "$(get_config_source MACHINE)" \
+      --arg retention_value "${RETENTION:-}" \
+      --arg retention_source "$(get_config_source RETENTION)" \
+      --arg idle_timeout_value "${IDLE_TIMEOUT:-}" \
+      --arg idle_timeout_source "$(get_config_source IDLE_TIMEOUT)" \
+      --arg devcontainer_path_value "${DEVCONTAINER_PATH:-}" \
+      --arg devcontainer_path_source "$(get_config_source DEVCONTAINER_PATH)" \
+      --arg location_value "${LOCATION:-}" \
+      --arg location_source "$(get_config_source LOCATION)" \
+      --arg display_name_value "${DISPLAY_NAME:-}" \
+      --arg display_name_source "$(get_config_source DISPLAY_NAME)" \
+      --arg ui_style_value "${SPACEHEATER_UI_STYLE:-unicode}" \
+      --arg ui_style_source "$(get_config_source UI_STYLE)" \
+      --arg debug_value "${DEBUG:-false}" \
+      --arg debug_source "$(get_config_source DEBUG)" \
+      --arg detected_repo "$detected_repo" \
+      --arg detected_branch "$detected_branch" \
+      --arg detected_devcontainer "$devcontainer_path" \
+      --arg detected_cpus "$devcontainer_cpus" \
+      --arg detected_memory "$devcontainer_memory" \
+      '{
+        loaded_config_files: $config_files,
+        repository: {
+          repo: {
+            value: (if $repo_value != "" then $repo_value else null end),
+            source: $repo_source,
+            detected: (if $detected_repo != "" then $detected_repo else null end)
+          },
+          branch: {
+            value: (if $branch_value != "" then $branch_value else null end),
+            source: $branch_source,
+            detected: (if $detected_branch != "" then $detected_branch else null end)
+          }
+        },
+        connection: {
+          method: {
+            value: $connect_value,
+            source: $connect_source,
+            options: ["browser", "ssh", "code"]
+          }
+        },
+        codespace_overrides: {
+          machine: {
+            value: (if $machine_value != "" then $machine_value else null end),
+            source: $machine_source
+          },
+          retention: {
+            value: (if $retention_value != "" then $retention_value else null end),
+            source: $retention_source
+          },
+          idle_timeout: {
+            value: (if $idle_timeout_value != "" then $idle_timeout_value else null end),
+            source: $idle_timeout_source
+          },
+          devcontainer_path: {
+            value: (if $devcontainer_path_value != "" then $devcontainer_path_value else null end),
+            source: $devcontainer_path_source,
+            detected: (if $detected_devcontainer != "" then $detected_devcontainer else null end)
+          },
+          location: {
+            value: (if $location_value != "" then $location_value else null end),
+            source: $location_source
+          },
+          display_name: {
+            value: (if $display_name_value != "" then $display_name_value else null end),
+            source: $display_name_source
+          }
+        },
+        ui: {
+          style: {
+            value: $ui_style_value,
+            source: $ui_style_source,
+            options: ["unicode", "plain", "simple"]
+          }
+        },
+        debug: {
+          enabled: {
+            value: $debug_value,
+            source: $debug_source
+          }
+        },
+        detected: {
+          repository: (if $detected_repo != "" then $detected_repo else null end),
+          branch: (if $detected_branch != "" then $detected_branch else null end),
+          devcontainer: (if $detected_devcontainer != "" then {
+            path: $detected_devcontainer,
+            requirements: {
+              cpus: (if $detected_cpus != "" then $detected_cpus else null end),
+              memory: (if $detected_memory != "" then $detected_memory else null end)
+            }
+          } else null end)
+        },
+        timestamp: (now | todate)
+      }'
+  else
+    echo -e "${BOLD}${ICON_BRAND} SPACEHEATER CONFIGURATION${NC}"
+    echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+
+    # Show loaded config files
+    echo -e "${BOLD}Loaded Config Files:${NC}"
+    if [ -z "$LOADED_CONFIG_FILES" ]; then
+      echo -e "  ${DIM}No config files found (using environment variables and defaults)${NC}"
+    else
+      while IFS= read -r config_file; do
+        echo -e "  ${GREEN}${ICON_CHECK}${NC} $config_file"
+      done <<< "$LOADED_CONFIG_FILES"
+    fi
+    echo ""
+
+    echo -e "${BOLD}Repository Settings:${NC}"
+    echo -e "  ${ICON_REPO} SPACEHEATER_REPO:              ${CYAN}${SPACEHEATER_REPO:-<auto-detect from git>}${NC}"
+    echo -e "  ${ICON_BRANCH} SPACEHEATER_BRANCH:            ${CYAN}${SPACEHEATER_BRANCH:-<auto-detect from repo>}${NC}"
+    echo ""
+
+    echo -e "${BOLD}Connection Settings:${NC}"
+    echo -e "  ${ICON_ARROW_RIGHT} SPACEHEATER_CONNECT:           ${CYAN}${CONNECT_METHOD:-browser}${NC} ${DIM}(options: browser, ssh, code)${NC}"
+    echo ""
+
+    echo -e "${BOLD}Codespace Overrides ${DIM}(optional):${NC}"
+    echo -e "  ${ICON_MACHINE} SPACEHEATER_MACHINE:           ${CYAN}${MACHINE:-<use devcontainer or GitHub default>}${NC}"
+    echo -e "  ${ICON_TIMER} SPACEHEATER_RETENTION:         ${CYAN}${RETENTION:-<use GitHub default>}${NC}"
+    echo -e "  ${ICON_TIMER} SPACEHEATER_IDLE_TIMEOUT:      ${CYAN}${IDLE_TIMEOUT:-<use GitHub/org default>}${NC}"
+    echo -e "  ${ICON_REPO} SPACEHEATER_DEVCONTAINER_PATH: ${CYAN}${DEVCONTAINER_PATH:-<auto-detect>}${NC}"
+    echo -e "  ${ICON_REGION} SPACEHEATER_LOCATION:          ${CYAN}${LOCATION:-<auto-detect closest region>}${NC}"
+    echo -e "  ${ICON_CALENDAR} SPACEHEATER_DISPLAY_NAME:      ${CYAN}${DISPLAY_NAME:-<GitHub-generated>}${NC}"
+    echo ""
+
+    echo -e "${BOLD}UI Settings:${NC}"
+    echo -e "  ${ICON_INFO} SPACEHEATER_UI_STYLE:          ${CYAN}${SPACEHEATER_UI_STYLE:-unicode}${NC} ${DIM}(options: unicode, plain, simple)${NC}"
+    echo ""
+
+    echo -e "${BOLD}Debug Settings:${NC}"
+    echo -e "  ${ICON_INFO} SPACEHEATER_DEBUG:             ${CYAN}${DEBUG:-false}${NC}"
+    echo ""
+
+    echo -e "${BOLD}Current Detection:${NC}"
+
+    # Try to detect and show current values
+    if detect_repo &>/dev/null; then
+      local detected_repo=$(detect_repo)
+      echo -e "  ${ICON_CHECK} Detected Repository:           ${GREEN}$detected_repo${NC}"
+      echo -e "  ${ICON_CHECK} Detected Branch:               ${GREEN}$(detect_default_branch)${NC}"
+
+      # Try to show devcontainer info if we're in the repo
+      if [ -f ".devcontainer/devcontainer.json" ]; then
+        echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer/devcontainer.json (found)${NC}"
+
+        # Try to extract hostRequirements if jq is available
+        if command -v jq &>/dev/null; then
+          local cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
+          local memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
+          if [ -n "$cpus" ] || [ -n "$memory" ]; then
+            echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
+          fi
+        fi
+      elif [ -f ".devcontainer.json" ]; then
+        echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer.json (found)${NC}"
+      else
+        echo -e "  ${ICON_INFO} Devcontainer:                  ${DIM}<none - will use GitHub default image>${NC}"
+      fi
+    else
+      echo -e "  ${ICON_CROSS} Detected Repository:           ${DIM}<none - not in a git repo>${NC}"
+    fi
+
+    echo -e "\n${DIM}────────────────────────────────────────────────────────────────${NC}"
+    echo -e "${BOLD}${ICON_INFO} Configuration Philosophy:${NC}"
+    echo -e "  Spaceheater respects your repository's devcontainer and GitHub's defaults."
+    echo -e "  Only set environment variables when you need to override these defaults."
+    echo ""
+    echo -e "${BOLD}${ICON_NEXT} Available Commands:${NC}"
+    echo -e "  ${CYAN}spaceheater config init${NC}      Create a config file template"
+    echo -e "  ${CYAN}spaceheater config edit${NC}      Edit your config file"
+    echo -e "  ${CYAN}spaceheater config validate${NC}  Validate config file syntax"
+    echo ""
+    echo -e "${BOLD}${ICON_NEXT} Configuration Precedence (highest to lowest):${NC}"
+    echo -e "  ${DIM}1. CLI arguments${NC}"
+    echo -e "  ${DIM}2. Environment variables (SPACEHEATER_*)${NC}"
+    echo -e "  ${DIM}3. Repository config (.spaceheater.conf)${NC}"
+    echo -e "  ${DIM}4. User config (~/.config/spaceheater/config)${NC}"
+    echo -e "  ${DIM}5. System config (/etc/spaceheater/config)${NC}"
+    echo -e "  ${DIM}6. Built-in defaults${NC}"
+  fi
 }
 
 cmd_version() {
-  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} version ${CYAN}$VERSION${NC}"
-  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
-  echo -e "A tool for pre-creating fully-built GitHub Codespaces that are ready for instant startup."
-  echo ""
-  echo -e "${ICON_REPO} Project: ${CYAN}https://github.com/dbernard/spaceheater${NC}"
-  echo -e "${ICON_CALENDAR} License: ${CYAN}MIT${NC}"
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Get git commit hash if available
+    local git_commit=""
+    if git rev-parse HEAD &>/dev/null 2>&1; then
+      git_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+    fi
+
+    # Get system information
+    local os_type=$(uname -s)
+    local os_version=$(uname -r)
+    local platform=$(uname -m)
+    local bash_version="${BASH_VERSION}"
+
+    # Output JSON
+    jq -n \
+      --arg version "$VERSION" \
+      --arg git_commit "$git_commit" \
+      --arg os_type "$os_type" \
+      --arg os_version "$os_version" \
+      --arg platform "$platform" \
+      --arg bash_version "$bash_version" \
+      --arg project_url "https://github.com/dbernard/spaceheater" \
+      --arg license "MIT" \
+      '{
+        version: $version,
+        git_commit: (if $git_commit != "" then $git_commit else null end),
+        system: {
+          os_type: $os_type,
+          os_version: $os_version,
+          platform: $platform,
+          bash_version: $bash_version
+        },
+        project: {
+          url: $project_url,
+          license: $license
+        },
+        timestamp: (now | todate)
+      }'
+  else
+    echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} version ${CYAN}$VERSION${NC}"
+    echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+    echo -e "A tool for pre-creating fully-built GitHub Codespaces that are ready for instant startup."
+    echo ""
+    echo -e "${ICON_REPO} Project: ${CYAN}https://github.com/dbernard/spaceheater${NC}"
+    echo -e "${ICON_CALENDAR} License: ${CYAN}MIT${NC}"
+  fi
 }
 
 cmd_help() {
@@ -1507,10 +2308,11 @@ cmd_help() {
 # ============================================================================
 
 main() {
-  # Parse --config flag before anything else
+  # Parse --config and --json flags before anything else
   local custom_config=""
   local -a args=()
   local expect_config_value=0
+  OUTPUT_FORMAT=""  # Global variable for output format (empty or "json")
 
   for arg in "$@"; do
     if [ $expect_config_value -eq 1 ]; then
@@ -1520,6 +2322,16 @@ main() {
       custom_config="${arg#--config=}"
     elif [[ "$arg" == "--config" ]]; then
       expect_config_value=1
+    elif [[ "$arg" == "--json" ]] || [[ "$arg" == "-j" ]]; then
+      OUTPUT_FORMAT="json"
+    elif [[ "$arg" =~ ^--output= ]]; then
+      # Support --output=json format as well
+      local output_value="${arg#--output=}"
+      if [[ "$output_value" == "json" ]]; then
+        OUTPUT_FORMAT="json"
+      else
+        error "Unknown output format: $output_value (supported: json)"
+      fi
     else
       args+=("$arg")
     fi
