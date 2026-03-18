@@ -685,6 +685,48 @@ $fields_filter
 EOF
 }
 
+# Get connection URL based on connection method
+# Usage: get_connection_url <codespace_name>
+get_connection_url() {
+  local codespace_name="$1"
+  local connection_url=""
+
+  case "$CONNECT_METHOD" in
+    browser|web)
+      connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
+      ;;
+    ssh)
+      connection_url="ssh://$codespace_name"
+      ;;
+    code|vscode)
+      connection_url="vscode://github.codespaces/$codespace_name"
+      ;;
+  esac
+
+  echo "$connection_url"
+}
+
+# Output JSON error
+# Usage: output_json_error <action> <error_message> [additional_fields]
+output_json_error() {
+  local action="$1"
+  local error_msg="$2"
+  local additional="${3:-}"
+
+  if [ -n "$additional" ]; then
+    jq -n \
+      --arg action "$action" \
+      --arg error "$error_msg" \
+      --argjson additional "$additional" \
+      '{action: $action, success: false, error: $error, timestamp: (now | todate)} + $additional'
+  else
+    jq -n \
+      --arg action "$action" \
+      --arg error "$error_msg" \
+      '{action: $action, success: false, error: $error, timestamp: (now | todate)}'
+  fi
+}
+
 # Output JSON for single codespace commands (start, stop, delete, etc.)
 # Usage: output_single_codespace_json <action> <codespace_name> [success_message]
 output_single_codespace_json() {
@@ -702,6 +744,33 @@ output_single_codespace_json() {
       success: true,
       message: (if \$msg != \"\" then \$msg else null end),
       codespace: (. | $codespace_filter),
+      timestamp: \$current_time
+    }
+  "
+}
+
+# Output JSON for connection commands (start, autostart)
+# Usage: output_connection_json <action> <codespace_name>
+output_connection_json() {
+  local action="$1"
+  local codespace_name="$2"
+  local connection_url=$(get_connection_url "$codespace_name")
+
+  # Get the codespace details and transform to JSON
+  local codespace_filter=$(build_codespace_json_filter false)
+
+  gh api "/user/codespaces/$codespace_name" | jq \
+    --arg action "$action" \
+    --arg connection_url "$connection_url" \
+    --arg connection_method "$CONNECT_METHOD" \
+    "
+    (now | todate) as \$current_time |
+    {
+      action: \$action,
+      success: true,
+      codespace: (. | $codespace_filter),
+      connection_url: \$connection_url,
+      connection_method: \$connection_method,
       timestamp: \$current_time
     }
   "
@@ -988,7 +1057,7 @@ cmd_create() {
       output_multiple_codespaces_json "create" "${created_names[@]}"
     else
       # Output error JSON if all creations failed
-      echo "{\"action\":\"create\",\"success\":false,\"error\":\"Failed to create any codespaces\",\"requested_count\":$count,\"created_count\":0,\"failed_count\":$failed,\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+      output_json_error "create" "Failed to create any codespaces" "{\"requested_count\":$count,\"created_count\":0,\"failed_count\":$failed}"
     fi
     return
   fi
@@ -1254,39 +1323,7 @@ cmd_start() {
 
   # Handle JSON output if requested
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
-    # Determine connection URL and method
-    local connection_url=""
-    case "$CONNECT_METHOD" in
-      browser|web)
-        connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
-        ;;
-      ssh)
-        connection_url="ssh://$codespace_name"
-        ;;
-      code|vscode)
-        connection_url="vscode://github.codespaces/$codespace_name"
-        ;;
-    esac
-
-    # Build the complete JQ filter using our utilities
-    local codespace_filter=$(build_codespace_json_filter false)
-
-    # Output JSON with codespace details
-    gh api "/user/codespaces/$codespace_name" | jq \
-      --arg action "start" \
-      --arg connection_url "$connection_url" \
-      --arg connection_method "$CONNECT_METHOD" \
-      "
-      (now | todate) as \$current_time |
-      {
-        action: \$action,
-        success: true,
-        codespace: (. | $codespace_filter),
-        connection_url: \$connection_url,
-        connection_method: \$connection_method,
-        timestamp: \$current_time
-      }
-    "
+    output_connection_json "start" "$codespace_name"
     return
   fi
 
@@ -1323,39 +1360,7 @@ cmd_autostart() {
 
   # Handle JSON output if requested
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
-    # Determine connection URL and method
-    local connection_url=""
-    case "$CONNECT_METHOD" in
-      browser|web)
-        connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
-        ;;
-      ssh)
-        connection_url="ssh://$codespace_name"
-        ;;
-      code|vscode)
-        connection_url="vscode://github.codespaces/$codespace_name"
-        ;;
-    esac
-
-    # Build the complete JQ filter using our utilities
-    local codespace_filter=$(build_codespace_json_filter false)
-
-    # Output JSON with codespace details
-    gh api "/user/codespaces/$codespace_name" | jq \
-      --arg action "autostart" \
-      --arg connection_url "$connection_url" \
-      --arg connection_method "$CONNECT_METHOD" \
-      "
-      (now | todate) as \$current_time |
-      {
-        action: \$action,
-        success: true,
-        codespace: (. | $codespace_filter),
-        connection_url: \$connection_url,
-        connection_method: \$connection_method,
-        timestamp: \$current_time
-      }
-    "
+    output_connection_json "autostart" "$codespace_name"
     return
   fi
 
@@ -1398,13 +1403,13 @@ cmd_stop() {
 
     if [ -z "$running_codespaces" ]; then
       if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
-        echo '{
-          "action": "stop",
-          "success": true,
-          "codespaces": [],
-          "count": 0,
-          "message": "No running codespaces found",
-          "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
+        jq -n '{
+          action: "stop",
+          success: true,
+          codespaces: [],
+          count: 0,
+          message: "No running codespaces found",
+          timestamp: (now | todate)
         }'
         return 0
       fi
@@ -1525,13 +1530,7 @@ cmd_stop() {
       "
     else
       # Output error as JSON
-      echo '{
-        "action": "stop",
-        "success": false,
-        "message": "Failed to stop codespace",
-        "codespace_name": "'"$codespace_name"'",
-        "timestamp": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"
-      }'
+      output_json_error "stop" "Failed to stop codespace" "{\"codespace_name\":\"$codespace_name\"}"
       exit 1
     fi
     return
@@ -1569,7 +1568,14 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 
   if [ -z "$to_delete" ]; then
     if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
-      echo "{\"action\":\"clean\",\"success\":true,\"deleted_count\":0,\"age_threshold_days\":$days,\"message\":\"No codespaces older than $days days found\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+      jq -n --arg days "$days" '{
+        action: "clean",
+        success: true,
+        deleted_count: 0,
+        age_threshold_days: ($days | tonumber),
+        message: "No codespaces older than \($days) days found",
+        timestamp: (now | todate)
+      }'
     else
       success "No codespaces older than $days days found."
     fi
@@ -1621,7 +1627,7 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
         }
       '
     else
-      echo "{\"action\":\"clean\",\"success\":false,\"error\":\"Failed to delete any codespaces\",\"deleted_count\":0,\"failed_count\":$failed,\"age_threshold_days\":$days,\"total_found\":$total_found,\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+      output_json_error "clean" "Failed to delete any codespaces" "{\"deleted_count\":0,\"failed_count\":$failed,\"age_threshold_days\":$days,\"total_found\":$total_found}"
     fi
     return
   fi
@@ -1679,7 +1685,7 @@ cmd_delete() {
     if gh codespace delete -c "$codespace_name" --force 2>/dev/null; then
       output_single_codespace_json "delete" "$codespace_name" "Codespace deleted successfully"
     else
-      echo "{\"action\":\"delete\",\"success\":false,\"error\":\"Failed to delete codespace\",\"codespace_name\":\"$codespace_name\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+      output_json_error "delete" "Failed to delete codespace" "{\"codespace_name\":\"$codespace_name\"}"
     fi
     return
   fi
