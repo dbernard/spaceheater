@@ -185,6 +185,21 @@ install_completions() {
   fi
 }
 
+# Create config directory
+create_config_dir() {
+  local config_dir="$HOME/.config/spaceheater"
+
+  if [ ! -d "$config_dir" ]; then
+    info "Creating config directory: $config_dir"
+    mkdir -p "$config_dir"
+    success "Config directory created"
+  else
+    info "Config directory already exists: $config_dir"
+  fi
+
+  echo "  Note: Config files are optional. Run 'spaceheater config init' to create one."
+}
+
 # Main installation
 main() {
   echo
@@ -210,12 +225,17 @@ main() {
   install_completions "$install_dir"
   echo
 
+  # Create config directory
+  create_config_dir
+  echo
+
   # Verify installation
   info "Verifying installation..."
   if command -v spaceheater &>/dev/null; then
     success "spaceheater is now available!"
     echo
     echo "Run 'spaceheater help' to get started"
+    echo "Optional: Run 'spaceheater config init' to create a config file"
   else
     warn "Installation complete, but spaceheater is not yet in your PATH"
     echo "You may need to:"
