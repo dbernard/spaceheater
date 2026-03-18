@@ -54,37 +54,89 @@ remove_installation() {
 
   info "Removing: $install_path"
 
-  if [ -w "$install_dir" ]; then
-    rm -f "$install_path"
+  if rm -f "$install_path" 2>/dev/null; then
+    success "Removed $install_path"
   else
-    sudo rm -f "$install_path"
+    error "Cannot remove $install_path (permission denied). Please remove manually or run with appropriate permissions."
   fi
-
-  success "Removed $install_path"
 }
 
 # Remove completions
 remove_completions() {
   local removed=0
+  local failed=0
 
   # Bash completions
   if [ -f "$HOME/.local/share/bash-completion/completions/spaceheater" ]; then
-    rm -f "$HOME/.local/share/bash-completion/completions/spaceheater"
-    success "Removed bash completions"
-    removed=1
+    if rm -f "$HOME/.local/share/bash-completion/completions/spaceheater" 2>/dev/null; then
+      success "Removed bash completions from ~/.local/share/bash-completion/completions"
+      removed=1
+    else
+      warn "Failed to remove bash completions from ~/.local/share/bash-completion/completions"
+      failed=1
+    fi
   fi
 
   if [ -f "/usr/local/etc/bash_completion.d/spaceheater" ]; then
-    if [ -w "/usr/local/etc/bash_completion.d" ]; then
-      rm -f "/usr/local/etc/bash_completion.d/spaceheater"
+    if rm -f "/usr/local/etc/bash_completion.d/spaceheater" 2>/dev/null; then
+      success "Removed bash completions from /usr/local/etc/bash_completion.d"
+      removed=1
     else
-      sudo rm -f "/usr/local/etc/bash_completion.d/spaceheater"
+      warn "Failed to remove bash completions from /usr/local/etc/bash_completion.d (permission denied)"
+      failed=1
     fi
-    success "Removed bash completions"
-    removed=1
   fi
 
-  if [ $removed -eq 0 ]; then
+  # Homebrew bash completions
+  if command -v brew &>/dev/null; then
+    local brew_bash_completion="$(brew --prefix)/etc/bash_completion.d/spaceheater"
+    if [ -f "$brew_bash_completion" ]; then
+      if rm -f "$brew_bash_completion" 2>/dev/null; then
+        success "Removed bash completions from $(brew --prefix)/etc/bash_completion.d"
+        removed=1
+      else
+        warn "Failed to remove bash completions from $(brew --prefix)/etc/bash_completion.d (permission denied)"
+        failed=1
+      fi
+    fi
+  fi
+
+  # Zsh completions
+  if [ -f "$HOME/.local/share/zsh/site-functions/_spaceheater" ]; then
+    if rm -f "$HOME/.local/share/zsh/site-functions/_spaceheater" 2>/dev/null; then
+      success "Removed zsh completions from ~/.local/share/zsh/site-functions"
+      removed=1
+    else
+      warn "Failed to remove zsh completions from ~/.local/share/zsh/site-functions"
+      failed=1
+    fi
+  fi
+
+  if [ -f "/usr/local/share/zsh/site-functions/_spaceheater" ]; then
+    if rm -f "/usr/local/share/zsh/site-functions/_spaceheater" 2>/dev/null; then
+      success "Removed zsh completions from /usr/local/share/zsh/site-functions"
+      removed=1
+    else
+      warn "Failed to remove zsh completions from /usr/local/share/zsh/site-functions (permission denied)"
+      failed=1
+    fi
+  fi
+
+  # Homebrew zsh completions
+  if command -v brew &>/dev/null; then
+    local brew_zsh_completion="$(brew --prefix)/share/zsh/site-functions/_spaceheater"
+    if [ -f "$brew_zsh_completion" ]; then
+      if rm -f "$brew_zsh_completion" 2>/dev/null; then
+        success "Removed zsh completions from $(brew --prefix)/share/zsh/site-functions"
+        removed=1
+      else
+        warn "Failed to remove zsh completions from $(brew --prefix)/share/zsh/site-functions (permission denied)"
+        failed=1
+      fi
+    fi
+  fi
+
+  if [ $removed -eq 0 ] && [ $failed -eq 0 ]; then
     info "No completions found to remove"
   fi
 }

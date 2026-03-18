@@ -76,16 +76,8 @@ determine_install_dir() {
   # Fall back to /usr/local/bin if writable
   elif [ -w "/usr/local/bin" ]; then
     install_dir="/usr/local/bin"
-  # Try /usr/local/bin with sudo
-  elif [ -d "/usr/local/bin" ]; then
-    warn "/usr/local/bin requires sudo access"
-    if sudo -v &>/dev/null; then
-      install_dir="/usr/local/bin"
-    else
-      error "Cannot install: neither ~/.local/bin nor /usr/local/bin are accessible"
-    fi
   else
-    error "No suitable installation directory found"
+    error "Cannot install: ~/.local/bin cannot be created and /usr/local/bin is not writable. Please create ~/.local/bin manually or run with appropriate permissions."
   fi
 
   echo "$install_dir"
@@ -103,12 +95,12 @@ install_script() {
   info "Installing to: $install_dir/spaceheater"
 
   # Copy the script
-  if [ -w "$install_dir" ]; then
-    cp "$script_path" "$install_dir/spaceheater"
-    chmod +x "$install_dir/spaceheater"
-  else
-    sudo cp "$script_path" "$install_dir/spaceheater"
-    sudo chmod +x "$install_dir/spaceheater"
+  if ! cp "$script_path" "$install_dir/spaceheater" 2>/dev/null; then
+    error "Cannot write to $install_dir. Please check permissions."
+  fi
+
+  if ! chmod +x "$install_dir/spaceheater" 2>/dev/null; then
+    error "Cannot set executable permissions on $install_dir/spaceheater"
   fi
 
   success "Installed spaceheater to $install_dir/spaceheater"
@@ -156,12 +148,21 @@ install_completions() {
     bash_completions_dir="$HOME/.local/share/bash-completion/completions"
   elif [ -d "/usr/local/etc/bash_completion.d" ]; then
     bash_completions_dir="/usr/local/etc/bash_completion.d"
+  elif command -v brew &>/dev/null && [ -d "$(brew --prefix)/etc/bash_completion.d" ]; then
+    bash_completions_dir="$(brew --prefix)/etc/bash_completion.d"
   fi
 
-  if [ -n "$bash_completions_dir" ] && [ -w "$bash_completions_dir" ]; then
-    if [ -f "$script_dir/completions/spaceheater.bash" ]; then
-      cp "$script_dir/completions/spaceheater.bash" "$bash_completions_dir/spaceheater"
-      success "Installed bash completions to $bash_completions_dir"
+  if [ -n "$bash_completions_dir" ]; then
+    if [ -w "$bash_completions_dir" ]; then
+      if [ -f "$script_dir/completions/spaceheater.bash" ]; then
+        if cp "$script_dir/completions/spaceheater.bash" "$bash_completions_dir/spaceheater" 2>/dev/null; then
+          success "Installed bash completions to $bash_completions_dir"
+        else
+          warn "Failed to install bash completions to $bash_completions_dir (permission denied)"
+        fi
+      fi
+    else
+      warn "Found bash completion directory but it's not writable: $bash_completions_dir"
     fi
   fi
 
@@ -171,12 +172,21 @@ install_completions() {
     zsh_completions_dir="$HOME/.local/share/zsh/site-functions"
   elif [ -d "/usr/local/share/zsh/site-functions" ]; then
     zsh_completions_dir="/usr/local/share/zsh/site-functions"
+  elif command -v brew &>/dev/null && [ -d "$(brew --prefix)/share/zsh/site-functions" ]; then
+    zsh_completions_dir="$(brew --prefix)/share/zsh/site-functions"
   fi
 
-  if [ -n "$zsh_completions_dir" ] && [ -w "$zsh_completions_dir" ]; then
-    if [ -f "$script_dir/completions/_spaceheater" ]; then
-      cp "$script_dir/completions/_spaceheater" "$zsh_completions_dir/_spaceheater"
-      success "Installed zsh completions to $zsh_completions_dir"
+  if [ -n "$zsh_completions_dir" ]; then
+    if [ -w "$zsh_completions_dir" ]; then
+      if [ -f "$script_dir/completions/_spaceheater" ]; then
+        if cp "$script_dir/completions/_spaceheater" "$zsh_completions_dir/_spaceheater" 2>/dev/null; then
+          success "Installed zsh completions to $zsh_completions_dir"
+        else
+          warn "Failed to install zsh completions to $zsh_completions_dir (permission denied)"
+        fi
+      fi
+    else
+      warn "Found zsh completion directory but it's not writable: $zsh_completions_dir"
     fi
   fi
 
