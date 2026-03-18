@@ -46,7 +46,8 @@ find_config_files() {
     config_files+=(".spaceheater.conf")
   fi
 
-  printf '%s\n' "${config_files[@]}"
+  # Use conditional expansion to handle empty array with set -u
+  printf '%s\n' "${config_files[@]+"${config_files[@]}"}"
 }
 
 # Track which variables were set by environment before config loading
@@ -112,7 +113,8 @@ load_config_files() {
     config_files+=("$line")
   done < <(find_config_files)
 
-  for config_file in "${config_files[@]}"; do
+  # Use conditional expansion to handle empty array with set -u
+  for config_file in "${config_files[@]+"${config_files[@]}"}"; do
     load_config_file "$config_file"
     if [ -z "$LOADED_CONFIG_FILES" ]; then
       LOADED_CONFIG_FILES="$config_file"
