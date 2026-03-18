@@ -591,6 +591,7 @@ EOF
 }
 
 # Returns JQ filter for calculating age fields from timestamps
+# Note: Timestamps are pre-normalized to UTC Z format by normalize_timestamps()
 get_age_calculation_filter() {
   cat <<'EOF'
 # Calculate age in seconds and days
@@ -737,7 +738,7 @@ output_single_codespace_json() {
   # Get the codespace details and transform to JSON
   local codespace_filter=$(build_codespace_json_filter false)
 
-  gh api "/user/codespaces/$codespace_name" | jq --arg action "$action" --arg msg "$message" "
+  gh api "/user/codespaces/$codespace_name" | normalize_timestamps | jq --arg action "$action" --arg msg "$message" "
     (now | todate) as \$current_time |
     {
       action: \$action,
@@ -759,7 +760,7 @@ output_connection_json() {
   # Get the codespace details and transform to JSON
   local codespace_filter=$(build_codespace_json_filter false)
 
-  gh api "/user/codespaces/$codespace_name" | jq \
+  gh api "/user/codespaces/$codespace_name" | normalize_timestamps | jq \
     --arg action "$action" \
     --arg connection_url "$connection_url" \
     --arg connection_method "$CONNECT_METHOD" \
@@ -786,7 +787,7 @@ output_multiple_codespaces_json() {
   # Build array of codespace details
   local results="[]"
   for name in "${codespace_names[@]}"; do
-    local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+    local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
     results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
   done
 
@@ -836,6 +837,62 @@ else:
 # GitHub API wrapper functions
 get_all_codespaces() {
   gh api "/user/codespaces?repository_id=$(get_repo_id)" "$@"
+}
+
+# Normalize ISO 8601 timestamps with timezone offsets to UTC Z format
+# This ensures jq's fromdate can parse timestamps correctly
+normalize_timestamps() {
+  # Use fd 3 for JSON data, since stdin is used for the Python script heredoc
+  python3 /dev/stdin 3<&0 <<'PYTHON_SCRIPT'
+import sys
+import json
+import os
+from datetime import datetime, timezone
+
+# Timestamp fields to normalize
+TIMESTAMP_FIELDS = ['created_at', 'updated_at', 'last_used_at']
+
+def normalize_timestamp(timestamp_str):
+    """Convert ISO 8601 timestamp with timezone offset to UTC Z format."""
+    if not timestamp_str:
+        return timestamp_str
+    try:
+        dt = datetime.fromisoformat(timestamp_str)
+        utc_dt = dt.astimezone(timezone.utc)
+        return utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+    except (ValueError, AttributeError):
+        return timestamp_str
+
+def normalize_object(obj):
+    """Normalize timestamp fields recursively."""
+    if not isinstance(obj, dict):
+        return obj
+
+    normalized = {}
+    for key, value in obj.items():
+        if key in TIMESTAMP_FIELDS and isinstance(value, str):
+            normalized[key] = normalize_timestamp(value)
+        elif isinstance(value, dict):
+            normalized[key] = normalize_object(value)
+        elif isinstance(value, list):
+            normalized[key] = [normalize_object(item) if isinstance(item, dict) else item for item in value]
+        else:
+            normalized[key] = value
+    return normalized
+
+try:
+    # Read JSON from fd 3 (original stdin before heredoc redirection)
+    with os.fdopen(3, 'r') as f:
+        data = json.load(f)
+    normalized = [normalize_object(obj) for obj in data] if isinstance(data, list) else normalize_object(data)
+    json.dump(normalized, sys.stdout)
+except json.JSONDecodeError as e:
+    print(f"Error: Invalid JSON input: {e}", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
+PYTHON_SCRIPT
 }
 
 get_codespaces_with_jq() {
@@ -1084,7 +1141,7 @@ cmd_list() {
     local codespace_filter=$(build_codespace_json_filter true)
 
     # Use jq to transform the codespaces with our reusable filters
-    get_all_codespaces | jq --arg repo "$REPO" --arg branch "$BRANCH" "
+    get_all_codespaces | normalize_timestamps | jq --arg repo "$REPO" --arg branch "$BRANCH" "
       # Current timestamp for calculations
       (now | todate) as \$current_time |
 
@@ -1451,7 +1508,7 @@ cmd_stop() {
       # Build array of stopped codespace details
       local results="[]"
       for name in "${stopped_names[@]}"; do
-        local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+        local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
         if [ "$codespace_data" != "{}" ]; then
           results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
         fi
@@ -1515,7 +1572,7 @@ cmd_stop() {
       local codespace_filter=$(build_codespace_json_filter false)
 
       # Output JSON with codespace details
-      gh api "/user/codespaces/$codespace_name" | jq \
+      gh api "/user/codespaces/$codespace_name" | normalize_timestamps | jq \
         --arg action "stop" \
         --arg msg "Stopped successfully" \
         "
@@ -1594,7 +1651,7 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
     # First, fetch details of all codespaces to delete BEFORE deletion
     local results="[]"
     while IFS=$'\t' read -r name display_name created_at; do
-      local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+      local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
       if [ "$codespace_data" != "{}" ]; then
         results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
       fi
