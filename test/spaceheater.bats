@@ -456,3 +456,115 @@ EOF
     [ "$status" -ne 0 ]
     [[ "$output" =~ [Ee]rror ]]
 }
+
+# =============================================================================
+# JSON Output Tests
+# =============================================================================
+
+@test "list command supports --json flag" {
+    # Mock gh to return codespace data
+    create_mock_gh
+    # The fixture is already generated in setup()
+
+    run "$SPACEHEATER" list --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty  # Will fail if not valid JSON
+
+    # Check for expected fields
+    [[ $(echo "$output" | jq -r '.codespaces') != "null" ]]
+    [[ $(echo "$output" | jq -r '.repository') != "null" ]]
+    [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
+}
+
+@test "list command supports -j shorthand for JSON" {
+    # Mock gh to return codespace data
+    create_mock_gh
+    # The fixture is already generated in setup()
+
+    run "$SPACEHEATER" list -j
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty  # Will fail if not valid JSON
+    [[ $(echo "$output" | jq -r '.codespaces') != "null" ]]
+}
+
+@test "list command supports --output=json format" {
+    # Mock gh to return codespace data
+    create_mock_gh
+    # The fixture is already generated in setup()
+
+    run "$SPACEHEATER" list --output=json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty  # Will fail if not valid JSON
+    [[ $(echo "$output" | jq -r '.codespaces') != "null" ]]
+}
+
+@test "JSON output includes temperature field" {
+    # Mock gh to return codespace with specific state
+    create_mock_gh
+    cat > "${FIXTURES}/codespaces.json" << 'EOF'
+{
+  "codespaces": [{
+    "name": "test-codespace",
+    "display_name": "Test Codespace",
+    "state": "Available",
+    "created_at": "2024-03-18T10:00:00Z",
+    "updated_at": "2024-03-18T14:00:00Z",
+    "git_status": {
+      "has_uncommitted_changes": false,
+      "has_unpushed_changes": false,
+      "ahead": 0,
+      "behind": 0,
+      "ref": "main"
+    },
+    "machine": {
+      "display_name": "4 cores, 16 GB RAM"
+    },
+    "repository": {
+      "full_name": "test/repo"
+    },
+    "owner": {
+      "login": "testuser"
+    }
+  }],
+  "total_count": 1
+}
+EOF
+
+    run "$SPACEHEATER" list --json
+    [ "$status" -eq 0 ]
+
+    # Check that temperature field exists and is "hot" for Available state
+    [[ $(echo "$output" | jq -r '.codespaces[0].temperature') == "hot" ]]
+    # Check that raw state is also preserved
+    [[ $(echo "$output" | jq -r '.codespaces[0].state') == "Available" ]]
+}
+
+@test "JSON output handles empty codespace list" {
+    # Mock gh to return empty codespace list
+    create_mock_gh
+    cat > "${FIXTURES}/codespaces.json" << 'EOF'
+{
+  "codespaces": [],
+  "total_count": 0
+}
+EOF
+
+    run "$SPACEHEATER" list --json
+    [ "$status" -eq 0 ]
+
+    # Check structure is correct even with empty list
+    [[ $(echo "$output" | jq -r '.codespaces | length') == "0" ]]
+    [[ $(echo "$output" | jq -r '.total_count') == "0" ]]
+}
+
+@test "rejects unsupported output formats" {
+    run "$SPACEHEATER" list --output=xml
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Unknown output format: xml" ]]
+}

@@ -499,31 +499,242 @@ LOADED_CONFIG_FILES=""
 # ============================================================================
 
 error() {
-  echo -e "${RED}${ICON_ERROR} Error: $*${NC}" >&2
+  local message="$*"
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Output JSON error format
+    jq -n --arg msg "$message" \
+      '{"error": true, "message": $msg, "timestamp": now | todate}' >&2
+  else
+    echo -e "${RED}${ICON_ERROR} Error: $message${NC}" >&2
+  fi
   exit 1
 }
 
 info() {
-  echo -e "${BLUE}${ICON_INFO} $*${NC}"
+  # Skip info messages in JSON mode (they would corrupt the JSON output)
+  if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+    echo -e "${BLUE}${ICON_INFO} $*${NC}"
+  fi
 }
 
 success() {
-  echo -e "${GREEN}${ICON_SUCCESS} $*${NC}"
+  # Skip success messages in JSON mode (they would corrupt the JSON output)
+  if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
+    echo -e "${GREEN}${ICON_SUCCESS} $*${NC}"
+  fi
 }
 
 warn() {
-  echo -e "${YELLOW}${ICON_WARNING} $*${NC}"
+  # Output warnings to stderr in JSON mode to not corrupt stdout JSON
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    jq -n --arg msg "$*" \
+      '{"warning": true, "message": $msg, "timestamp": now | todate}' >&2
+  else
+    echo -e "${YELLOW}${ICON_WARNING} $*${NC}"
+  fi
 }
 
 debug() {
   if [ "$DEBUG" = "true" ]; then
-    echo -e "${BLUE}[DEBUG]${NC} $*" >&2
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      # Output debug to stderr in JSON format
+      jq -n --arg msg "$*" \
+        '{"debug": true, "message": $msg, "timestamp": now | todate}' >&2
+    else
+      echo -e "${BLUE}[DEBUG]${NC} $*" >&2
+    fi
   fi
 }
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+# ============================================================================
+# JSON OUTPUT UTILITIES
+# ============================================================================
+
+# Returns JQ filter expression for calculating temperature from codespace state
+# This centralizes the temperature logic for reuse across commands
+get_temperature_jq_filter() {
+  cat <<'EOF'
+(
+  if .state == "Available" then "hot"
+  elif .state == "Shutdown" and $is_git_clean and $activity_age_days <= 3 then "warm"
+  elif .state | test("Starting|Provisioning|ShuttingDown|Stopping") then "transitioning"
+  else "cold"
+  end
+)
+EOF
+}
+
+# Returns JQ filter for determining if git status is clean
+get_git_clean_jq_filter() {
+  cat <<'EOF'
+((.git_status.has_uncommitted_changes // false) == false and
+ (.git_status.has_unpushed_changes // false) == false and
+ (.git_status.ahead // 0) == 0)
+EOF
+}
+
+# Returns JQ filter for normalizing git status with defaults
+get_git_status_normalization_filter() {
+  cat <<'EOF'
+{
+  has_uncommitted_changes: (.git_status.has_uncommitted_changes // false),
+  has_unpushed_changes: (.git_status.has_unpushed_changes // false),
+  ahead: (.git_status.ahead // 0),
+  behind: (.git_status.behind // 0),
+  ref: (.git_status.ref // "unknown")
+}
+EOF
+}
+
+# Returns JQ filter for calculating age fields from timestamps
+get_age_calculation_filter() {
+  cat <<'EOF'
+# Calculate age in seconds and days
+(($current_time | fromdate) - (.created_at | fromdate)) as $age_seconds |
+($age_seconds / 86400 | floor) as $age_days |
+
+# Calculate last activity (prefer last_used_at over updated_at over created_at)
+(.last_used_at // .updated_at // .created_at) as $last_activity |
+(($current_time | fromdate) - ($last_activity | fromdate)) as $activity_age_seconds |
+($activity_age_seconds / 86400 | floor) as $activity_age_days |
+EOF
+}
+
+# Returns JQ filter for common codespace fields
+# Usage: get_codespace_json_fields [include_optional]
+get_codespace_json_fields() {
+  local include_optional="${1:-true}"
+
+  cat <<'EOF'
+{
+  name: .name,
+  display_name: .display_name,
+  state: .state,
+  temperature: TEMPERATURE_PLACEHOLDER,
+  is_git_clean: $is_git_clean,
+  age_days: $age_days,
+  age_seconds: $age_seconds,
+  last_activity: $last_activity,
+  activity_age_days: $activity_age_days,
+  activity_age_seconds: $activity_age_seconds,
+  created_at: .created_at,
+  updated_at: .updated_at,
+  last_used_at: .last_used_at,
+  git_status: GIT_STATUS_PLACEHOLDER,
+  machine_type: .machine.display_name
+EOF
+
+  # Include optional fields if requested
+  if [ "$include_optional" = "true" ]; then
+    cat <<'EOF'
+  ,
+  repository: .repository.full_name,
+  owner: .owner.login,
+  web_url: .web_url,
+  recent_folders: .recent_folders,
+  environment: .environment,
+  prebuild: .prebuild,
+  location: .location,
+  runtime_constraints: .runtime_constraints
+EOF
+  fi
+
+  echo "}"
+}
+
+# Wrapper function for JSON output from commands
+# Usage: output_json_or_text <json_jq_filter> <text_output_function>
+output_json_or_text() {
+  local json_filter="$1"
+  local text_function="$2"
+
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Output JSON using the provided filter
+    eval "$json_filter"
+  else
+    # Call the text output function
+    $text_function
+  fi
+}
+
+# Build complete JQ filter for codespace with temperature
+# This combines all the utility filters into a complete transformation
+build_codespace_json_filter() {
+  local include_optional="${1:-true}"
+
+  # Get the component filters
+  local temp_filter=$(get_temperature_jq_filter)
+  local git_clean_filter=$(get_git_clean_jq_filter)
+  local git_status_filter=$(get_git_status_normalization_filter)
+  local age_filter=$(get_age_calculation_filter)
+  local fields_filter=$(get_codespace_json_fields "$include_optional")
+
+  # Replace placeholders with actual filters
+  fields_filter="${fields_filter/TEMPERATURE_PLACEHOLDER/$temp_filter}"
+  fields_filter="${fields_filter/GIT_STATUS_PLACEHOLDER/$git_status_filter}"
+
+  # Combine all filters
+  cat <<EOF
+$age_filter
+$git_clean_filter as \$is_git_clean |
+$fields_filter
+EOF
+}
+
+# Output JSON for single codespace commands (start, stop, delete, etc.)
+# Usage: output_single_codespace_json <action> <codespace_name> [success_message]
+output_single_codespace_json() {
+  local action="$1"
+  local codespace_name="$2"
+  local message="${3:-}"
+
+  # Get the codespace details and transform to JSON
+  local codespace_filter=$(build_codespace_json_filter false)
+
+  gh api "/user/codespaces/$codespace_name" | jq --arg action "$action" --arg msg "$message" "
+    (now | todate) as \$current_time |
+    {
+      action: \$action,
+      success: true,
+      message: (if \$msg != \"\" then \$msg else null end),
+      codespace: (. | $codespace_filter),
+      timestamp: \$current_time
+    }
+  "
+}
+
+# Output JSON for multiple codespace operations (create, clean, etc.)
+# Usage: output_multiple_codespaces_json <action> <codespace_names_array>
+output_multiple_codespaces_json() {
+  local action="$1"
+  shift
+  local -a codespace_names=("$@")
+
+  # Build array of codespace details
+  local results="[]"
+  for name in "${codespace_names[@]}"; do
+    local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null || echo "{}")
+    results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
+  done
+
+  # Transform and output
+  local codespace_filter=$(build_codespace_json_filter false)
+
+  echo "$results" | jq --arg action "$action" "
+    (now | todate) as \$current_time |
+    {
+      action: \$action,
+      success: true,
+      codespaces: (. | map($codespace_filter)),
+      count: . | length,
+      timestamp: \$current_time
+    }
+  "
+}
 
 # Date calculation helper functions
 calculate_age_days() {
@@ -777,6 +988,32 @@ cmd_create() {
 
 cmd_list() {
   init_repo_config
+
+  # Handle JSON output if requested
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    # Build the complete JQ filter using our utilities
+    local codespace_filter=$(build_codespace_json_filter true)
+
+    # Use jq to transform the codespaces with our reusable filters
+    get_all_codespaces | jq --arg repo "$REPO" --arg branch "$BRANCH" "
+      # Current timestamp for calculations
+      (now | todate) as \$current_time |
+
+      # Main output structure
+      {
+        codespaces: (.codespaces | map(
+          $codespace_filter
+        ) | sort_by(.created_at) | reverse),
+        repository: \$repo,
+        branch: \$branch,
+        timestamp: \$current_time,
+        total_count: .total_count
+      }
+    "
+    return
+  fi
+
+  # Original formatted output
   echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} - Codespaces for ${CYAN}$REPO${NC}"
   echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
 
@@ -976,6 +1213,26 @@ cmd_start() {
   # Build command arguments
   local -a cmd_args=()
   local codespace_name=""
+
+  # Example: If JSON output requested for start command (future enhancement)
+  # This shows how easily we can add JSON support to other commands using our utilities
+  # if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+  #   # Start the codespace and get its details
+  #   # ... start logic here ...
+  #   # Output the result as JSON using our reusable filter
+  #   local codespace_filter=$(build_codespace_json_filter false)  # false = don't include optional fields
+  #   gh codespace view -c "$codespace_name" --json "$(echo "$codespace_filter" | jq -Rs .)" | jq --arg action "start" '
+  #     (now | todate) as $current_time |
+  #     . as $cs |
+  #     {
+  #       action: $action,
+  #       success: true,
+  #       codespace: ($cs | '"$codespace_filter"'),
+  #       timestamp: $current_time
+  #     }
+  #   '
+  #   return
+  # fi
 
   # If search term provided, try to find matching codespace
   if [ -n "$search_term" ]; then
@@ -1507,10 +1764,11 @@ cmd_help() {
 # ============================================================================
 
 main() {
-  # Parse --config flag before anything else
+  # Parse --config and --json flags before anything else
   local custom_config=""
   local -a args=()
   local expect_config_value=0
+  OUTPUT_FORMAT=""  # Global variable for output format (empty or "json")
 
   for arg in "$@"; do
     if [ $expect_config_value -eq 1 ]; then
@@ -1520,6 +1778,16 @@ main() {
       custom_config="${arg#--config=}"
     elif [[ "$arg" == "--config" ]]; then
       expect_config_value=1
+    elif [[ "$arg" == "--json" ]] || [[ "$arg" == "-j" ]]; then
+      OUTPUT_FORMAT="json"
+    elif [[ "$arg" =~ ^--output= ]]; then
+      # Support --output=json format as well
+      local output_value="${arg#--output=}"
+      if [[ "$output_value" == "json" ]]; then
+        OUTPUT_FORMAT="json"
+      else
+        error "Unknown output format: $output_value (supported: json)"
+      fi
     else
       args+=("$arg")
     fi
