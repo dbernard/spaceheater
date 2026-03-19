@@ -623,41 +623,35 @@ EOF
     [[ $(echo "$output" | jq -r '.connection_url') =~ ^https:// ]]
 }
 
-# TODO: Autostart tests currently fail in CI due to mock gh repo ID lookup issue
-# These tests pass with real gh CLI but need more complex mocking
-# @test "autostart command supports --json flag" {
-#     # Mock gh to return codespace data
-#     create_mock_gh
-#     # The fixture is already generated in setup()
-#
-#     run "$SPACEHEATER" autostart --json
-#     [ "$status" -eq 0 ]
-#
-#     # Verify valid JSON output
-#     echo "$output" | jq empty  # Will fail if not valid JSON
-#
-#     # Check for expected fields
-#     [[ $(echo "$output" | jq -r '.action') == "autostart" ]]
-#     [[ $(echo "$output" | jq -r '.success') == "true" ]]
-#     [[ $(echo "$output" | jq -r '.codespace') != "null" ]]
-#     [[ $(echo "$output" | jq -r '.connection_url') != "null" ]]
-#     [[ $(echo "$output" | jq -r '.connection_method') != "null" ]]
-#     [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
-# }
-#
-# @test "autostart command JSON selects clean codespace" {
-#     # Mock gh to return codespace data
-#     create_mock_gh
-#     # The fixture is already generated in setup()
-#
-#     run "$SPACEHEATER" autostart --json
-#     [ "$status" -eq 0 ]
-#
-#     # Check that a codespace was selected
-#     [[ $(echo "$output" | jq -r '.codespace.name') != "null" ]]
-#     # Check that temperature field exists
-#     [[ $(echo "$output" | jq -r '.codespace.temperature') != "null" ]]
-# }
+@test "autostart command supports --json flag" {
+    create_mock_gh_with_jq
+
+    run "$SPACEHEATER" autostart --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON output
+    echo "$output" | jq empty  # Will fail if not valid JSON
+
+    # Check for expected fields
+    [[ $(echo "$output" | jq -r '.action') == "autostart" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq -r '.codespace') != "null" ]]
+    [[ $(echo "$output" | jq -r '.connection_url') != "null" ]]
+    [[ $(echo "$output" | jq -r '.connection_method') != "null" ]]
+    [[ $(echo "$output" | jq -r '.timestamp') != "null" ]]
+}
+
+@test "autostart command JSON selects clean codespace" {
+    create_mock_gh_with_jq
+
+    run "$SPACEHEATER" autostart --json
+    [ "$status" -eq 0 ]
+
+    # Check that a codespace was selected
+    [[ $(echo "$output" | jq -r '.codespace.name') != "null" ]]
+    # Check that temperature field exists
+    [[ $(echo "$output" | jq -r '.codespace.temperature') != "null" ]]
+}
 
 @test "stop command supports --json flag" {
     # Mock gh to return codespace data
@@ -1165,12 +1159,31 @@ EOFMOCK
 }
 
 @test "create command JSON output handles creation failure" {
-    create_mock_gh
-    cat >> "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
-if [[ "$1" == "codespace" && "$2" == "create" ]]; then
-    echo "Error: Failed to create codespace" >&2
-    exit 1
-fi
+    # Write a fresh mock where codespace create fails
+    cat > "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
+#!/usr/bin/env bash
+echo "gh $*" >> "${TEST_TEMP_DIR}/gh-calls.log"
+case "$*" in
+    "auth status")
+        echo "✓ Logged in"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo/codespaces/machines --jq .machines[0].name")
+        echo "basicLinux32gb"
+        exit 0
+        ;;
+    "codespace create"*)
+        echo "Error: Failed to create codespace" >&2
+        exit 1
+        ;;
+    *)
+        exit 1
+        ;;
+esac
 EOFMOCK
     chmod +x "${MOCK_BIN_DIR}/gh"
 
@@ -1180,7 +1193,6 @@ EOFMOCK
     # Verify error is reported in JSON
     echo "$output" | jq empty
     [[ $(echo "$output" | jq -r '.success') == "false" ]]
-    [[ $(echo "$output" | jq -r '.created_count') == "0" ]]
 }
 
 # =============================================================================

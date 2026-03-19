@@ -501,9 +501,9 @@ LOADED_CONFIG_FILES=""
 error() {
   local message="$*"
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
-    # Output JSON error format
-    jq -n --arg msg "$message" \
-      '{"error": true, "message": $msg, "timestamp": now | todate}' >&2
+    # Output JSON error format consistent with output_json_error() schema
+    jq -n --arg error "$message" \
+      '{success: false, error: $error, timestamp: (now | todate)}' >&2
   else
     echo -e "${RED}${ICON_ERROR} Error: $message${NC}" >&2
   fi
@@ -647,21 +647,6 @@ EOF
   echo "}"
 }
 
-# Wrapper function for JSON output from commands
-# Usage: output_json_or_text <json_jq_filter> <text_output_function>
-output_json_or_text() {
-  local json_filter="$1"
-  local text_function="$2"
-
-  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
-    # Output JSON using the provided filter
-    eval "$json_filter"
-  else
-    # Call the text output function
-    $text_function
-  fi
-}
-
 # Build complete JQ filter for codespace with temperature
 # This combines all the utility filters into a complete transformation
 build_codespace_json_filter() {
@@ -686,15 +671,21 @@ $fields_filter
 EOF
 }
 
-# Get connection URL based on connection method
-# Usage: get_connection_url <codespace_name>
+# Get connection URL based on connection method (for non-browser, no API call needed)
+# For browser/web, pass pre-fetched web_url to avoid redundant API calls.
+# Usage: get_connection_url <codespace_name> [web_url]
 get_connection_url() {
   local codespace_name="$1"
+  local web_url="${2:-}"
   local connection_url=""
 
   case "$CONNECT_METHOD" in
     browser|web)
-      connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
+      if [ -n "$web_url" ]; then
+        connection_url="$web_url"
+      else
+        connection_url=$(gh api "/user/codespaces/$codespace_name" -q '.web_url')
+      fi
       ;;
     ssh)
       connection_url="ssh://$codespace_name"
@@ -751,16 +742,23 @@ output_single_codespace_json() {
 }
 
 # Output JSON for connection commands (start, autostart)
+# Single API call — extracts web_url from the fetched data for browser connections.
 # Usage: output_connection_json <action> <codespace_name>
 output_connection_json() {
   local action="$1"
   local codespace_name="$2"
-  local connection_url=$(get_connection_url "$codespace_name")
 
-  # Get the codespace details and transform to JSON
+  # Single fetch for all data
+  local codespace_data=$(gh api "/user/codespaces/$codespace_name" | normalize_timestamps)
+
+  # Extract web_url from fetched data for browser connection method
+  local web_url=$(echo "$codespace_data" | jq -r '.web_url // empty')
+  local connection_url=$(get_connection_url "$codespace_name" "$web_url")
+
+  # Transform to JSON output
   local codespace_filter=$(build_codespace_json_filter false)
 
-  gh api "/user/codespaces/$codespace_name" | normalize_timestamps | jq \
+  echo "$codespace_data" | jq \
     --arg action "$action" \
     --arg connection_url "$connection_url" \
     --arg connection_method "$CONNECT_METHOD" \
@@ -778,32 +776,53 @@ output_connection_json() {
 }
 
 # Output JSON for multiple codespace operations (create, clean, etc.)
-# Usage: output_multiple_codespaces_json <action> <codespace_names_array>
+# Accepts a JSON array of codespace objects via stdin (already normalized).
+# Usage: echo "$json_array" | output_multiple_codespaces_json <action> [message]
 output_multiple_codespaces_json() {
   local action="$1"
-  shift
-  local -a codespace_names=("$@")
-
-  # Build array of codespace details
-  local results="[]"
-  for name in "${codespace_names[@]}"; do
-    local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
-    results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
-  done
+  local message="${2:-}"
 
   # Transform and output
   local codespace_filter=$(build_codespace_json_filter false)
 
-  echo "$results" | jq --arg action "$action" "
-    (now | todate) as \$current_time |
-    {
-      action: \$action,
-      success: true,
-      codespaces: (. | map($codespace_filter)),
-      count: . | length,
-      timestamp: \$current_time
-    }
-  "
+  if [ -n "$message" ]; then
+    jq --arg action "$action" --arg msg "$message" "
+      (now | todate) as \$current_time |
+      {
+        action: \$action,
+        success: true,
+        codespaces: (. | map($codespace_filter)),
+        count: . | length,
+        message: \$msg,
+        timestamp: \$current_time
+      }
+    "
+  else
+    jq --arg action "$action" "
+      (now | todate) as \$current_time |
+      {
+        action: \$action,
+        success: true,
+        codespaces: (. | map($codespace_filter)),
+        count: . | length,
+        timestamp: \$current_time
+      }
+    "
+  fi
+}
+
+# Fetch full codespace details for a list of names, returning a JSON array.
+# Usage: fetch_codespaces_by_names <name1> [name2] ...
+fetch_codespaces_by_names() {
+  local -a names=("$@")
+  local results="[]"
+  for name in "${names[@]}"; do
+    local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
+    if [ "$codespace_data" != "{}" ]; then
+      results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
+    fi
+  done
+  echo "$results"
 }
 
 # Date calculation helper functions
@@ -1111,7 +1130,7 @@ cmd_create() {
   # Handle JSON output
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
     if [ ${#created_names[@]} -gt 0 ]; then
-      output_multiple_codespaces_json "create" "${created_names[@]}"
+      fetch_codespaces_by_names "${created_names[@]}" | output_multiple_codespaces_json "create"
     else
       # Output error JSON if all creations failed
       output_json_error "create" "Failed to create any codespaces" "{\"requested_count\":$count,\"created_count\":0,\"failed_count\":$failed}"
@@ -1455,8 +1474,11 @@ cmd_stop() {
       info "Finding all running codespaces to stop..."
     fi
 
-    # Get all running codespaces
-    local running_codespaces=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) | .[] | "\(.name)\t\(.display_name // .name)"')
+    # Fetch all codespace data once; extract running codespaces for the stop loop
+    # and keep the full JSON for later output.
+    local all_data=$(get_all_codespaces | normalize_timestamps)
+    local running_codespaces=$(echo "$all_data" | jq -r '
+      .codespaces | map(select(.state == "Available")) | .[] | "\(.name)\t\(.display_name // .name)"')
 
     if [ -z "$running_codespaces" ]; then
       if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
@@ -1503,31 +1525,14 @@ cmd_stop() {
       fi
     done <<< "$running_codespaces"
 
-    # Handle JSON output if requested
+    # Handle JSON output if requested — filter the already-fetched bulk data
+    # to only include the codespaces we successfully stopped.
     if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
-      # Build array of stopped codespace details
-      local results="[]"
-      for name in "${stopped_names[@]}"; do
-        local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
-        if [ "$codespace_data" != "{}" ]; then
-          results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
-        fi
-      done
-
-      # Transform and output
-      local codespace_filter=$(build_codespace_json_filter false)
-
-      echo "$results" | jq --arg action "stop" --arg msg "Stopped $stopped codespace(s)" "
-        (now | todate) as \$current_time |
-        {
-          action: \$action,
-          success: true,
-          codespaces: (. | map($codespace_filter)),
-          count: . | length,
-          message: \$msg,
-          timestamp: \$current_time
-        }
-      "
+      # Build a jq-friendly JSON array of stopped names for filtering
+      local names_json=$(printf '%s\n' "${stopped_names[@]}" | jq -R . | jq -s .)
+      echo "$all_data" | jq --argjson names "$names_json" '
+        [.codespaces[] | select(.name as $n | $names | index($n))]
+      ' | output_multiple_codespaces_json "stop" "Stopped $stopped codespace(s)"
       return 0
     fi
 
@@ -1618,7 +1623,11 @@ cutoff = datetime.now(timezone.utc) - timedelta(days=$days)
 print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 ")
 
-  local to_delete=$(get_all_codespaces | jq -r --arg cutoff "$cutoff_date" '
+  # Fetch all codespace data once and normalize timestamps.
+  # Keep the full JSON for later output; derive the tab-delimited list for loops.
+  local all_data=$(get_all_codespaces | normalize_timestamps)
+
+  local to_delete=$(echo "$all_data" | jq -r --arg cutoff "$cutoff_date" '
       .codespaces |
       map(select(.created_at < $cutoff)) |
       .[] | "\(.name)\t\(.display_name // .name)\t\(.created_at)"')
@@ -1648,16 +1657,7 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
     local deleted=0
     local failed=0
 
-    # First, fetch details of all codespaces to delete BEFORE deletion
-    local results="[]"
-    while IFS=$'\t' read -r name display_name created_at; do
-      local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
-      if [ "$codespace_data" != "{}" ]; then
-        results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
-      fi
-    done <<< "$to_delete"
-
-    # Now delete the codespaces
+    # Delete the codespaces
     while IFS=$'\t' read -r name display_name created_at; do
       if gh codespace delete -c "$name" --force 2>/dev/null; then
         deleted=$((deleted + 1))
@@ -1668,14 +1668,17 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
     done <<< "$to_delete"
 
     if [ ${#deleted_names[@]} -gt 0 ]; then
-      # Transform and output with age threshold - filter to only successfully deleted ones
+      # Filter the already-fetched bulk data to only successfully deleted codespaces
+      local names_json=$(printf '%s\n' "${deleted_names[@]}" | jq -R . | jq -s .)
       local codespace_filter=$(build_codespace_json_filter false)
-      echo "$results" | jq --arg days "$days" --argjson deleted_count "$deleted" --argjson failed_count "$failed" --argjson total_found "$total_found" '
+      echo "$all_data" | jq --argjson names "$names_json" --arg days "$days" \
+        --argjson deleted_count "$deleted" --argjson failed_count "$failed" \
+        --argjson total_found "$total_found" '
         (now | todate) as $current_time |
         {
           action: "clean",
           success: true,
-          codespaces: (. | map('"$codespace_filter"')),
+          codespaces: ([.codespaces[] | select(.name as $n | $names | index($n))] | map('"$codespace_filter"')),
           deleted_count: $deleted_count,
           failed_count: $failed_count,
           age_threshold_days: ($days | tonumber),
