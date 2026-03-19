@@ -158,6 +158,8 @@ JSON output includes:
 - **Timestamps**: ISO 8601 formatted dates
 - **Success/error status**: Consistent error handling
 
+**Note:** JSON mode is designed for non-interactive/scripted use. Destructive commands (`delete`, `clean`) skip their confirmation prompts when `--json` is active and execute immediately. Ensure your scripts handle this accordingly.
+
 Perfect for:
 - CI/CD pipelines and GitHub Actions
 - LLM tool integration (Claude, GitHub Copilot)

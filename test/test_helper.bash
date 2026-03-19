@@ -336,6 +336,75 @@ EOF
     chmod +x "${MOCK_BIN_DIR}/gh"
 }
 
+# Create a mock gh that properly handles --jq filters via positional parameters.
+# The standard create_mock_gh uses $* case matching which breaks on complex jq
+# filters containing special characters (|, ?, parentheses). This variant checks
+# positional params ($1, $3, $4) to extract --jq filters reliably, making it
+# suitable for commands like autostart that pass complex jq queries.
+create_mock_gh_with_jq() {
+    cat > "${MOCK_BIN_DIR}/gh" << 'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >> "${TEST_TEMP_DIR}/gh-calls.log"
+
+# Handle --jq by checking positional params directly (avoids glob issues with $*)
+if [[ "$1" == "api" && "$3" == "--jq" ]]; then
+    API_PATH="$2"
+    JQ_FILTER="$4"
+
+    if [[ "$API_PATH" == "/repos/testorg/testrepo" ]]; then
+        cat "${FIXTURES}/codespaces.json" 2>/dev/null | command jq -r "$JQ_FILTER" 2>/dev/null
+        exit 0
+    elif [[ "$API_PATH" == /user/codespaces\?repository_id=* ]]; then
+        cat "${FIXTURES}/codespaces.json" 2>/dev/null | command jq -r "$JQ_FILTER" 2>/dev/null || echo ""
+        exit 0
+    fi
+fi
+
+case "$*" in
+    "auth status")
+        echo "✓ Logged in to github.com as testuser (oauth_token)"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /user/codespaces?repository_id=12345678")
+        if [[ -f "${FIXTURES}/codespaces.json" ]]; then
+            cat "${FIXTURES}/codespaces.json"
+        else
+            echo '{"codespaces": []}'
+        fi
+        exit 0
+        ;;
+    "codespace view"*)
+        echo '{"displayName": "Running Test Codespace"}'
+        exit 0
+        ;;
+    "codespace code"*|"codespace ssh"*)
+        exit 0
+        ;;
+    "api /user/codespaces/"*)
+        CODESPACE_NAME=$(echo "$*" | sed 's/api \/user\/codespaces\///' | awk '{print $1}')
+        if [[ -f "${FIXTURES}/codespaces.json" ]]; then
+            RESULT=$(cat "${FIXTURES}/codespaces.json" | command jq --arg name "$CODESPACE_NAME" '.codespaces | map(select(.name == $name)) | .[0] // empty' 2>/dev/null)
+            if [[ -n "$RESULT" && "$RESULT" != "null" ]]; then
+                echo "$RESULT" | command jq '. + {web_url: "https://codespaces.github.com/\(.name)"}'
+                exit 0
+            fi
+        fi
+        echo '{"name": "'"$CODESPACE_NAME"'", "state": "Available", "web_url": "https://codespaces.github.com/'"$CODESPACE_NAME"'"}'
+        exit 0
+        ;;
+    *)
+        echo "Error: Mock gh - unhandled command: $*" >&2
+        exit 1
+        ;;
+esac
+EOF
+    chmod +x "${MOCK_BIN_DIR}/gh"
+}
+
 # Create mock jq command (for tests that need specific jq behavior)
 create_mock_jq() {
     # Just pass through to real jq if it exists
