@@ -94,7 +94,7 @@ load_config_file() {
     key=$(echo "$key" | tr '[:lower:]' '[:upper:]')
 
     # Skip if this variable was set in the environment before config loading
-    if [[ " $ENV_VARS_SET " =~ " $key " ]]; then
+    if [[ " $ENV_VARS_SET " =~ \ $key\  ]]; then
       debug "  Skipped $key (set by environment)"
       continue
     fi
@@ -193,7 +193,7 @@ validate_config_file() {
     check_key=$(echo "$check_key" | tr '[:lower:]' '[:upper:]')
 
     # Check if key is valid
-    if [[ ! " $valid_keys " =~ " $check_key " ]]; then
+    if [[ ! " $valid_keys " =~ \ $check_key\  ]]; then
       error_msg="Line $line_num: Unknown configuration key '$key'"
       echo -e "${RED}${ICON_ERROR} $error_msg${NC}"
       errors=$((errors + 1))
@@ -314,7 +314,6 @@ if [ "${NO_COLOR:-}" != "" ]; then
   YELLOW=""
   BLUE=""
   CYAN=""
-  MAGENTA=""
   DIM=""
   BOLD=""
   NC=""
@@ -329,7 +328,6 @@ else
   YELLOW='\033[1;33m'   # Warning
   BLUE='\033[1;34m'     # Info
   CYAN='\033[0;36m'     # Secondary info
-  MAGENTA='\033[0;35m'  # Special emphasis
   DIM='\033[2m'         # De-emphasized text
   BOLD='\033[1m'        # Bold text
   NC='\033[0m'          # No Color/Reset
@@ -364,7 +362,7 @@ validate_machine_type() {
   local machine="$1"
   local valid_types="basicLinux32gb basicLinux standardLinux standardLinux32gb premiumLinux premiumLinux32gb largePremiumLinux"
 
-  if [[ ! " $valid_types " =~ " $machine " ]]; then
+  if [[ ! " $valid_types " =~ \ $machine\  ]]; then
     warn "Warning: '$machine' may not be a valid machine type"
     warn "Valid types: basicLinux32gb, standardLinux, premiumLinux, largePremiumLinux, etc."
     read -p "Continue anyway? [y/N] " -n 1 -r
@@ -389,7 +387,8 @@ get_default_machine() {
   if [ -z "$default_machine" ]; then
     # API call failed or no machines available
     # Check if it's an API error vs no machines
-    local api_response=$(get_available_machines 2>&1)
+    local api_response
+    api_response=$(get_available_machines 2>&1) || true
     if [[ "$api_response" == *"machines"* ]]; then
       # API worked but no machines available
       error "No machine types available for repository $REPO.\n\nPlease contact your repository administrator to enable Codespaces."
@@ -413,7 +412,8 @@ detect_repo() {
 
   # Try to detect from current git repository
   if git rev-parse --git-dir &>/dev/null 2>&1; then
-    local repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")"
+    local repo
+    repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "")"
     if [ -n "$repo" ]; then
       echo "$repo"
       return 0
@@ -432,7 +432,8 @@ detect_default_branch() {
   fi
 
   # Try to get default branch from GitHub API
-  local default_branch="$(gh api "/repos/$REPO" --jq .default_branch 2>/dev/null || echo "")"
+  local default_branch
+  default_branch="$(gh api "/repos/$REPO" --jq .default_branch 2>/dev/null || echo "")"
   if [ -n "$default_branch" ]; then
     echo "$default_branch"
     return 0
@@ -653,11 +654,16 @@ build_codespace_json_filter() {
   local include_optional="${1:-true}"
 
   # Get the component filters
-  local temp_filter=$(get_temperature_jq_filter)
-  local git_clean_filter=$(get_git_clean_jq_filter)
-  local git_status_filter=$(get_git_status_normalization_filter)
-  local age_filter=$(get_age_calculation_filter)
-  local fields_filter=$(get_codespace_json_fields "$include_optional")
+  local temp_filter
+  temp_filter=$(get_temperature_jq_filter)
+  local git_clean_filter
+  git_clean_filter=$(get_git_clean_jq_filter)
+  local git_status_filter
+  git_status_filter=$(get_git_status_normalization_filter)
+  local age_filter
+  age_filter=$(get_age_calculation_filter)
+  local fields_filter
+  fields_filter=$(get_codespace_json_fields "$include_optional")
 
   # Replace placeholders with actual filters
   fields_filter="${fields_filter/TEMPERATURE_PLACEHOLDER/$temp_filter}"
@@ -727,7 +733,8 @@ output_single_codespace_json() {
   local message="${3:-}"
 
   # Get the codespace details and transform to JSON
-  local codespace_filter=$(build_codespace_json_filter false)
+  local codespace_filter
+  codespace_filter=$(build_codespace_json_filter false)
 
   gh api "/user/codespaces/$codespace_name" | normalize_timestamps | jq --arg action "$action" --arg msg "$message" "
     (now | todate) as \$current_time |
@@ -749,14 +756,18 @@ output_connection_json() {
   local codespace_name="$2"
 
   # Single fetch for all data
-  local codespace_data=$(gh api "/user/codespaces/$codespace_name" | normalize_timestamps)
+  local codespace_data
+  codespace_data=$(gh api "/user/codespaces/$codespace_name" | normalize_timestamps) || true
 
   # Extract web_url from fetched data for browser connection method
-  local web_url=$(echo "$codespace_data" | jq -r '.web_url // empty')
-  local connection_url=$(get_connection_url "$codespace_name" "$web_url")
+  local web_url
+  web_url=$(echo "$codespace_data" | jq -r '.web_url // empty')
+  local connection_url
+  connection_url=$(get_connection_url "$codespace_name" "$web_url")
 
   # Transform to JSON output
-  local codespace_filter=$(build_codespace_json_filter false)
+  local codespace_filter
+  codespace_filter=$(build_codespace_json_filter false)
 
   echo "$codespace_data" | jq \
     --arg action "$action" \
@@ -783,7 +794,8 @@ output_multiple_codespaces_json() {
   local message="${2:-}"
 
   # Transform and output
-  local codespace_filter=$(build_codespace_json_filter false)
+  local codespace_filter
+  codespace_filter=$(build_codespace_json_filter false)
 
   if [ -n "$message" ]; then
     jq --arg action "$action" --arg msg "$message" "
@@ -817,7 +829,8 @@ fetch_codespaces_by_names() {
   local -a names=("$@")
   local results="[]"
   for name in "${names[@]}"; do
-    local codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
+    local codespace_data
+    codespace_data=$(gh api "/user/codespaces/$name" 2>/dev/null | normalize_timestamps || echo "{}")
     if [ "$codespace_data" != "{}" ]; then
       results=$(echo "$results" | jq --argjson cs "$codespace_data" '. + [$cs]')
     fi
@@ -943,12 +956,14 @@ select_codespace_interactive() {
   fi
 
   # Count matches
-  local match_count=$(echo "$matches" | wc -l | tr -d ' ')
+  local match_count
+  match_count=$(echo "$matches" | wc -l | tr -d ' ')
 
   if [ "$match_count" -eq 1 ]; then
     # Single match - use it
     codespace_name=$(echo "$matches" | cut -f1)
-    local display_name=$(echo "$matches" | cut -f2)
+    local display_name
+    display_name=$(echo "$matches" | cut -f2)
     debug "Found match: $display_name"
   else
     # Multiple matches - let user select interactively
@@ -1102,10 +1117,12 @@ cmd_create() {
     fi
 
     # Capture the output which contains the codespace name
-    local output="$(gh codespace create "${create_args[@]}" 2>&1)"
+    local output
+    output="$(gh codespace create "${create_args[@]}" 2>&1)" || true
 
     # Extract codespace name from output (last line is the codespace name)
-    local codespace_name=$(echo "$output" | tail -1 | grep -E '^[a-z0-9]+-[a-z0-9]+-[a-z0-9-]+$' || echo "")
+    local codespace_name
+    codespace_name=$(echo "$output" | tail -1 | grep -E '^[a-z0-9]+-[a-z0-9]+-[a-z0-9-]+$' || echo "")
 
     if [ -n "$codespace_name" ]; then
       if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
@@ -1157,7 +1174,8 @@ cmd_list() {
   # Handle JSON output if requested
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
     # Build the complete JQ filter using our utilities
-    local codespace_filter=$(build_codespace_json_filter true)
+    local codespace_filter
+    codespace_filter=$(build_codespace_json_filter true)
 
     # Use jq to transform the codespaces with our reusable filters
     get_all_codespaces | normalize_timestamps | jq --arg repo "$REPO" --arg branch "$BRANCH" "
@@ -1191,7 +1209,8 @@ cmd_list() {
   # Collect and categorize codespaces
   while IFS=$'\t' read -r state display_name branch has_uncommitted has_unpushed ahead behind name created_at; do
     # Calculate age in days for WARM/COLD determination
-    local age_days=$(calculate_age_days "$created_at")
+    local age_days
+    age_days=$(calculate_age_days "$created_at")
 
     # Determine git cleanliness (clean = no uncommitted, no ahead, optionally behind is OK)
     local is_git_clean=false
@@ -1261,7 +1280,8 @@ cmd_list() {
       git_details="clean"
     fi
 
-    local age=$(format_time_ago "$created_at")
+    local age
+    age=$(format_time_ago "$created_at")
 
     # Format the line (with dimmed text for COLD, state info for TRANSITIONING)
     local line=""
@@ -1384,7 +1404,8 @@ cmd_start() {
     debug "Searching for codespace matching: $search_term"
 
     # Fetch all codespaces with their names and display names
-    local matches=$(find_codespace_by_pattern "$search_term")
+    local matches
+    matches=$(find_codespace_by_pattern "$search_term")
 
     # Use interactive selection helper
     codespace_name=$(select_codespace_interactive "$matches" "$search_term")
@@ -1429,10 +1450,12 @@ cmd_autostart() {
   fi
 
   # Auto-select the best clean codespace
-  local codespace_name=$(auto_select_codespace)
+  local codespace_name
+  codespace_name=$(auto_select_codespace)
 
   debug "Selected codespace: $codespace_name"
-  local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)"
+  local display_name
+  display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)" || true
 
   # Handle JSON output if requested
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
@@ -1476,8 +1499,10 @@ cmd_stop() {
 
     # Fetch all codespace data once; extract running codespaces for the stop loop
     # and keep the full JSON for later output.
-    local all_data=$(get_all_codespaces | normalize_timestamps)
-    local running_codespaces=$(echo "$all_data" | jq -r '
+    local all_data
+    all_data=$(get_all_codespaces | normalize_timestamps)
+    local running_codespaces
+    running_codespaces=$(echo "$all_data" | jq -r '
       .codespaces | map(select(.state == "Available")) | .[] | "\(.name)\t\(.display_name // .name)"')
 
     if [ -z "$running_codespaces" ]; then
@@ -1497,7 +1522,8 @@ cmd_stop() {
     fi
 
     # Count how many we're stopping
-    local count=$(echo "$running_codespaces" | wc -l | tr -d ' ')
+    local count
+    count=$(echo "$running_codespaces" | wc -l | tr -d ' ')
     if [ "${OUTPUT_FORMAT:-}" != "json" ]; then
       info "Found $count running codespace(s)"
       echo
@@ -1529,7 +1555,8 @@ cmd_stop() {
     # to only include the codespaces we successfully stopped.
     if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
       # Build a jq-friendly JSON array of stopped names for filtering
-      local names_json=$(printf '%s\n' "${stopped_names[@]}" | jq -R . | jq -s .)
+      local names_json
+      names_json=$(printf '%s\n' "${stopped_names[@]}" | jq -R . | jq -s .)
       echo "$all_data" | jq --argjson names "$names_json" '
         [.codespaces[] | select(.name as $n | $names | index($n))]
       ' | output_multiple_codespaces_json "stop" "Stopped $stopped codespace(s)"
@@ -1550,7 +1577,8 @@ cmd_stop() {
     fi
 
     # Get the most recently used running codespace
-    local codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) |
+    local codespace_name
+    codespace_name=$(get_codespaces_with_jq '.codespaces | map(select(.state == "Available")) |
              sort_by(.last_used_at // .created_at) | reverse | .[0].name // empty')
 
     if [ -z "$codespace_name" ]; then
@@ -1561,20 +1589,23 @@ cmd_stop() {
     debug "Searching for codespace matching: $search_term"
 
     # Fetch all codespaces with their names and display names
-    local matches=$(find_codespace_by_pattern "$search_term")
+    local matches
+    matches=$(find_codespace_by_pattern "$search_term")
 
     # Use interactive selection helper
     codespace_name=$(select_codespace_interactive "$matches" "$search_term")
   fi
 
-  local display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName 2>/dev/null)"
+  local display_name
+  display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName 2>/dev/null)" || true
 
   # Handle JSON output if requested
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
     # Stop the codespace first
     if gh codespace stop -c "$codespace_name" 2>/dev/null; then
       # Build the complete JQ filter using our utilities
-      local codespace_filter=$(build_codespace_json_filter false)
+      local codespace_filter
+      codespace_filter=$(build_codespace_json_filter false)
 
       # Output JSON with codespace details
       gh api "/user/codespaces/$codespace_name" | normalize_timestamps | jq \
@@ -1617,7 +1648,8 @@ cmd_clean() {
 
   info "Finding codespaces older than $days days in $REPO..."
 
-  local cutoff_date=$(python3 -c "
+  local cutoff_date
+  cutoff_date=$(python3 -c "
 from datetime import datetime, timedelta, timezone
 cutoff = datetime.now(timezone.utc) - timedelta(days=$days)
 print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
@@ -1625,9 +1657,11 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 
   # Fetch all codespace data once and normalize timestamps.
   # Keep the full JSON for later output; derive the tab-delimited list for loops.
-  local all_data=$(get_all_codespaces | normalize_timestamps)
+  local all_data
+  all_data=$(get_all_codespaces | normalize_timestamps)
 
-  local to_delete=$(echo "$all_data" | jq -r --arg cutoff "$cutoff_date" '
+  local to_delete
+  to_delete=$(echo "$all_data" | jq -r --arg cutoff "$cutoff_date" '
       .codespaces |
       map(select(.created_at < $cutoff)) |
       .[] | "\(.name)\t\(.display_name // .name)\t\(.created_at)"')
@@ -1649,7 +1683,8 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
   fi
 
   # Count how many we found
-  local total_found=$(echo "$to_delete" | wc -l | tr -d ' ')
+  local total_found
+  total_found=$(echo "$to_delete" | wc -l | tr -d ' ')
 
   # Handle JSON output - skip confirmation and delete automatically
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
@@ -1669,8 +1704,10 @@ print(cutoff.strftime('%Y-%m-%dT%H:%M:%SZ'))
 
     if [ ${#deleted_names[@]} -gt 0 ]; then
       # Filter the already-fetched bulk data to only successfully deleted codespaces
-      local names_json=$(printf '%s\n' "${deleted_names[@]}" | jq -R . | jq -s .)
-      local codespace_filter=$(build_codespace_json_filter false)
+      local names_json
+      names_json=$(printf '%s\n' "${deleted_names[@]}" | jq -R . | jq -s .)
+      local codespace_filter
+      codespace_filter=$(build_codespace_json_filter false)
       echo "$all_data" | jq --argjson names "$names_json" --arg days "$days" \
         --argjson deleted_count "$deleted" --argjson failed_count "$failed" \
         --argjson total_found "$total_found" '
@@ -1732,13 +1769,16 @@ cmd_delete() {
   debug "Searching for codespace matching: $search_term"
 
   # Fetch all codespaces with their names and display names
-  local matches=$(find_codespace_by_pattern "$search_term")
+  local matches
+  matches=$(find_codespace_by_pattern "$search_term")
 
   # Use interactive selection helper
-  local codespace_name=$(select_codespace_interactive "$matches" "$search_term")
+  local codespace_name
+  codespace_name=$(select_codespace_interactive "$matches" "$search_term")
 
   # Get display name for the selected codespace
-  local display_name=$(echo "$matches" | grep "^$codespace_name" | cut -f2)
+  local display_name
+  display_name=$(echo "$matches" | grep "^$codespace_name" | cut -f2)
 
   # Handle JSON output - skip confirmation and interactive output
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
@@ -1815,7 +1855,8 @@ cmd_config_init() {
   fi
 
   # Create parent directory if needed
-  local config_dir=$(dirname "$config_file")
+  local config_dir
+  config_dir=$(dirname "$config_file")
   local dir_created=false
   if [ ! -d "$config_dir" ] && [ "$config_dir" != "." ]; then
     mkdir -p "$config_dir"
@@ -1855,7 +1896,8 @@ cmd_config_init() {
 EOF
 
   # Get absolute path for JSON output
-  local abs_path=$(cd "$(dirname "$config_file")" && pwd)/$(basename "$config_file")
+  local abs_path
+  abs_path=$(cd "$(dirname "$config_file")" && pwd)/$(basename "$config_file")
 
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
     jq -n \
@@ -1969,7 +2011,8 @@ cmd_config_edit() {
   fi
 
   # Get absolute path for JSON output
-  local abs_path=$(cd "$(dirname "$user_config")" && pwd)/$(basename "$user_config")
+  local abs_path
+  abs_path=$(cd "$(dirname "$user_config")" && pwd)/$(basename "$user_config")
 
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
     # In JSON mode, don't actually open the editor - return info about what would be edited
@@ -2007,7 +2050,7 @@ cmd_config() {
       local env_var="SPACEHEATER_${var_name}"
 
       # Check if set in environment
-      if [[ " $ENV_VARS_SET " =~ " $env_var " ]]; then
+      if [[ " $ENV_VARS_SET " =~ \ $env_var\  ]]; then
         echo "environment"
       # Check if value is set (from config file)
       elif [ -n "${!env_var:-}" ]; then
@@ -2196,7 +2239,8 @@ cmd_config() {
 
     # Try to detect and show current values
     if detect_repo &>/dev/null; then
-      local detected_repo=$(detect_repo)
+      local detected_repo
+      detected_repo=$(detect_repo)
       echo -e "  ${ICON_CHECK} Detected Repository:           ${GREEN}$detected_repo${NC}"
       echo -e "  ${ICON_CHECK} Detected Branch:               ${GREEN}$(detect_default_branch)${NC}"
 
@@ -2206,8 +2250,10 @@ cmd_config() {
 
         # Try to extract hostRequirements if jq is available
         if command -v jq &>/dev/null; then
-          local cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
-          local memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
+          local cpus
+          cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null) || true
+          local memory
+          memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null) || true
           if [ -n "$cpus" ] || [ -n "$memory" ]; then
             echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
           fi
@@ -2250,9 +2296,12 @@ cmd_version() {
     fi
 
     # Get system information
-    local os_type=$(uname -s)
-    local os_version=$(uname -r)
-    local platform=$(uname -m)
+    local os_type
+    os_type=$(uname -s)
+    local os_version
+    os_version=$(uname -r)
+    local platform
+    platform=$(uname -m)
     local bash_version="${BASH_VERSION}"
 
     # Output JSON

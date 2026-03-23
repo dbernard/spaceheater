@@ -318,9 +318,8 @@ While no CI is currently configured, here's the recommended CI pipeline:
 # Suggested GitHub Actions workflow
 test:
   - make check      # Verify prerequisites
-  - make lint       # Syntax check
+  - make lint       # Syntax check + ShellCheck
   - make test       # Run full test suite
-  - shellcheck *.sh # Additional linting
 ```
 
 ## Quality Gates

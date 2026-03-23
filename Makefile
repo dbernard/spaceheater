@@ -1,5 +1,8 @@
 .PHONY: help install uninstall test lint check clean
 
+# ShellCheck minimum severity: error, warning (default), info, style
+SHELLCHECK_SEVERITY ?= warning
+
 # Default target
 help:
 	@echo "spaceheater - Makefile targets:"
@@ -7,7 +10,7 @@ help:
 	@echo "  make install     Install spaceheater to your system"
 	@echo "  make uninstall   Uninstall spaceheater from your system"
 	@echo "  make test        Run test suite"
-	@echo "  make lint        Check shell script syntax"
+	@echo "  make lint        Check shell script syntax and run ShellCheck"
 	@echo "  make check       Check prerequisites"
 	@echo "  make clean       Clean test artifacts"
 	@echo ""
@@ -47,6 +50,15 @@ lint:
 	@bash -n install.sh
 	@if [ -f uninstall.sh ]; then bash -n uninstall.sh; fi
 	@echo "✓ No syntax errors"
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		echo "Running ShellCheck (-S $(SHELLCHECK_SEVERITY))..." && \
+		shellcheck -S $(SHELLCHECK_SEVERITY) spaceheater install.sh && \
+		(if [ -f uninstall.sh ]; then shellcheck -S $(SHELLCHECK_SEVERITY) uninstall.sh; fi) && \
+		(if [ -f test/test_helper.bash ]; then shellcheck -S $(SHELLCHECK_SEVERITY) test/test_helper.bash; fi) && \
+		echo "✓ ShellCheck passed"; \
+	else \
+		echo "⚠ ShellCheck not installed (recommended: brew install shellcheck)"; \
+	fi
 
 # Check prerequisites
 check:

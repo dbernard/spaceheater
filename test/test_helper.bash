@@ -13,20 +13,27 @@ generate_codespaces_fixture() {
     local target_file="$1"
 
     # Generate relative timestamps (cross-platform compatible)
-    local now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local now
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     # Calculate relative dates based on epoch seconds for cross-platform compatibility
-    local now_epoch=$(date +%s)
+    local now_epoch
+    now_epoch=$(date +%s)
     local two_hours_ago_epoch=$((now_epoch - 7200))
     local yesterday_epoch=$((now_epoch - 86400))
     local two_weeks_ago_epoch=$((now_epoch - 1209600))
 
     # Convert back to ISO 8601 format
-    local two_hours_ago=$(date -u -r $two_hours_ago_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$two_hours_ago_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
-    local yesterday_created=$(date -u -r $yesterday_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$yesterday_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
-    local yesterday_updated=$(date -u -r $((yesterday_epoch + 28800)) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$((yesterday_epoch + 28800))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
-    local two_weeks_ago_created=$(date -u -r $two_weeks_ago_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$two_weeks_ago_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
-    local two_weeks_ago_updated=$(date -u -r $((two_weeks_ago_epoch + 28800)) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$((two_weeks_ago_epoch + 28800))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local two_hours_ago
+    two_hours_ago=$(date -u -r $two_hours_ago_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$two_hours_ago_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local yesterday_created
+    yesterday_created=$(date -u -r $yesterday_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$yesterday_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local yesterday_updated
+    yesterday_updated=$(date -u -r $((yesterday_epoch + 28800)) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$((yesterday_epoch + 28800))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local two_weeks_ago_created
+    two_weeks_ago_created=$(date -u -r $two_weeks_ago_epoch +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$two_weeks_ago_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
+    local two_weeks_ago_updated
+    two_weeks_ago_updated=$(date -u -r $((two_weeks_ago_epoch + 28800)) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$((two_weeks_ago_epoch + 28800))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now")
 
     # Generate fixture with relative dates
     cat > "$target_file" << EOF
@@ -116,7 +123,8 @@ EOF
 # Setup function - runs before each test
 setup() {
     # Create temp directory for test isolation
-    export TEST_TEMP_DIR="$(mktemp -d -t spaceheater-test.XXXXXX)"
+    TEST_TEMP_DIR="$(mktemp -d -t spaceheater-test.XXXXXX)"
+    export TEST_TEMP_DIR
     export MOCK_BIN_DIR="${TEST_TEMP_DIR}/bin"
     mkdir -p "$MOCK_BIN_DIR"
 
