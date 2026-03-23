@@ -31,7 +31,8 @@ warn() {
 
 # Find installed spaceheater
 find_installation() {
-  local spaceheater_path=$(command -v spaceheater 2>/dev/null || echo "")
+  local spaceheater_path
+  spaceheater_path=$(command -v spaceheater 2>/dev/null || echo "")
 
   if [ -z "$spaceheater_path" ]; then
     # Not in PATH, check common locations
@@ -50,8 +51,6 @@ find_installation() {
 # Remove spaceheater
 remove_installation() {
   local install_path="$1"
-  local install_dir=$(dirname "$install_path")
-
   info "Removing: $install_path"
 
   if rm -f "$install_path" 2>/dev/null; then
@@ -89,7 +88,8 @@ remove_completions() {
 
   # Homebrew bash completions
   if command -v brew &>/dev/null; then
-    local brew_bash_completion="$(brew --prefix)/etc/bash_completion.d/spaceheater"
+    local brew_bash_completion
+    brew_bash_completion="$(brew --prefix)/etc/bash_completion.d/spaceheater"
     if [ -f "$brew_bash_completion" ]; then
       if rm -f "$brew_bash_completion" 2>/dev/null; then
         success "Removed bash completions from $(brew --prefix)/etc/bash_completion.d"
@@ -124,7 +124,8 @@ remove_completions() {
 
   # Homebrew zsh completions
   if command -v brew &>/dev/null; then
-    local brew_zsh_completion="$(brew --prefix)/share/zsh/site-functions/_spaceheater"
+    local brew_zsh_completion
+    brew_zsh_completion="$(brew --prefix)/share/zsh/site-functions/_spaceheater"
     if [ -f "$brew_zsh_completion" ]; then
       if rm -f "$brew_zsh_completion" 2>/dev/null; then
         success "Removed zsh completions from $(brew --prefix)/share/zsh/site-functions"
@@ -148,7 +149,8 @@ main() {
   echo
 
   # Find installation
-  local install_path=$(find_installation)
+  local install_path
+  install_path=$(find_installation)
 
   if [ -z "$install_path" ]; then
     warn "spaceheater is not installed (not found in PATH or common locations)"

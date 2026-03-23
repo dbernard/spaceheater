@@ -86,7 +86,8 @@ determine_install_dir() {
 # Install the script
 install_script() {
   local install_dir="$1"
-  local script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/spaceheater"
+  local script_path
+  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/spaceheater"
 
   if [ ! -f "$script_path" ]; then
     error "Cannot find spaceheater script at: $script_path"
@@ -138,7 +139,8 @@ check_path() {
 
 # Install shell completions (optional)
 install_completions() {
-  local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
   info "Installing shell completions..."
 
@@ -221,7 +223,8 @@ main() {
   echo
 
   # Determine where to install
-  local install_dir=$(determine_install_dir)
+  local install_dir
+  install_dir=$(determine_install_dir)
 
   # Install the script
   install_script "$install_dir"
