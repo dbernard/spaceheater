@@ -653,6 +653,50 @@ EOF
     [[ $(echo "$output" | jq -r '.codespace.temperature') != "null" ]]
 }
 
+@test "start command JSON returns structured error when API fetch fails" {
+    # Mock gh where codespace list works but individual API fetch fails
+    cat > "${MOCK_BIN_DIR}/gh" << 'EOFMOCK'
+#!/usr/bin/env bash
+case "$*" in
+    "auth status")
+        echo "✓ Logged in"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo --jq .id")
+        echo "12345678"
+        exit 0
+        ;;
+    "api /user/codespaces?repository_id=12345678 --jq "*)
+        # Return tab-separated format for codespace search
+        printf 'hot-space-001\tRunning Test Codespace\n'
+        exit 0
+        ;;
+    "api /user/codespaces?repository_id=12345678")
+        cat "${FIXTURES}/codespaces.json"
+        exit 0
+        ;;
+    "api /user/codespaces/"*)
+        # Simulate API failure for individual codespace fetch
+        exit 1
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOFMOCK
+    chmod +x "${MOCK_BIN_DIR}/gh"
+
+    run "$SPACEHEATER" start hot-space-001 --json
+    [ "$status" -ne 0 ]
+
+    # Should produce valid JSON with error details
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq -r '.action') == "start" ]]
+    [[ $(echo "$output" | jq -r '.success') == "false" ]]
+    [[ $(echo "$output" | jq -r '.error') =~ "Failed to fetch" ]]
+    [[ $(echo "$output" | jq -r '.codespace_name') == "hot-space-001" ]]
+}
+
 @test "stop command supports --json flag" {
     # Mock gh to return codespace data
     create_mock_gh
