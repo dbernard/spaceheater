@@ -27,21 +27,10 @@
       "command -v *"
     ]
   },
-  "auto_context": {
-    "always_include": [
-      ".claude/project.md",
-      ".claude/style.md"
-    ],
-    "on_test_changes": [
-      ".claude/testing.md",
-      "test/test_helper.bash"
-    ]
-  },
   "project": {
     "type": "cli-tool",
     "language": "bash",
     "testing_framework": "bats",
-    "version": "1.0.0",
     "description": "GitHub Codespaces management tool"
   }
 }
