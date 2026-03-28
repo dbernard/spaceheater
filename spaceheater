@@ -2605,15 +2605,22 @@ PARSE_PLIST
 
 # Get launchctl status for a label
 # Outputs: pid last_exit_status
+# Note: `launchctl list <label>` returns a dict-style output, not tab-separated
 _launchd_status() {
   local label="$1"
 
-  # launchctl list <label> outputs tab-separated: PID Status Label
   local output
   if output=$(launchctl list "$label" 2>/dev/null); then
-    echo "$output" | awk -v target="$label" '$3 == target { pid = ($1 == "-" ? "" : $1); print pid "\t" $2 }' 2>/dev/null || echo $'\t'
+    # Parse dict-style output: "PID" = 12345; / "LastExitStatus" = 0;
+    local pid=""
+    local exit_status=""
+    # Extract PID (only present when process is running)
+    pid=$(echo "$output" | awk -F '= ' '/"PID"/ {gsub(/[^0-9]/,"",$2); print $2}' 2>/dev/null)
+    exit_status=$(echo "$output" | awk -F '= ' '/LastExitStatus/ {gsub(/[^0-9]/,"",$2); print $2}' 2>/dev/null)
+    # Output pipe-separated to avoid IFS read issues with empty leading fields
+    echo "${pid:-}|${exit_status:-}"
   else
-    echo $'\t'
+    echo "|"
   fi
 }
 
@@ -3039,12 +3046,12 @@ cmd_schedule_remove() {
   fi
 
   # Remove schedule for specific repo (default: current repo)
+  local repo
   if [ -n "$target" ]; then
-    # Treat as repo name
-    local repo="$target"
+    repo="$target"
   else
     init_repo_config
-    local repo="$REPO"
+    repo="$REPO"
   fi
 
   local label
@@ -3094,7 +3101,7 @@ cmd_schedule_status() {
       status_output=$(_launchd_status "$label")
       local pid=""
       local exit_status=""
-      IFS=$'\t' read -r pid exit_status <<< "$status_output"
+      IFS='|' read -r pid exit_status <<< "$status_output"
 
       json_array=$(echo "$json_array" | jq \
         --arg label "$label" \
@@ -3117,7 +3124,7 @@ cmd_schedule_status() {
     log_file="$(_schedule_log_dir)/schedule.log"
     local recent_logs="null"
     if [ -f "$log_file" ]; then
-      recent_logs=$(tail -5 "$log_file" 2>/dev/null | jq -s '.' 2>/dev/null || echo "null")
+      recent_logs=$(tail -5 "$log_file" 2>/dev/null | jq -Rs 'split("\n") | map(select(. != ""))' 2>/dev/null || echo "null")
     fi
 
     jq -n \
@@ -3247,7 +3254,7 @@ cmd_schedule_run() {
         repository: $repo,
         desired_count: $desired,
         existing_hot_warm: $existing,
-        created_count: $deficit,
+        created_count: (.count // $deficit),
         skipped: false,
         create_result: .,
         timestamp: (now | todate)

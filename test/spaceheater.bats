@@ -1755,6 +1755,18 @@ setup_schedule_env() {
     [[ "$output" =~ "2" ]]
 }
 
+@test "schedule status JSON parses launchctl exit status" {
+    setup_schedule_env
+
+    "$SPACEHEATER" schedule set 1 --preset daily
+
+    run "$SPACEHEATER" schedule status --json
+    [ "$status" -eq 0 ]
+
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq '.schedules[0].last_exit_status') == "0" ]]
+}
+
 # =============================================================================
 # Schedule Run (Smart Top-up) Tests
 # =============================================================================

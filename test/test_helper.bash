@@ -529,11 +529,17 @@ case "$1" in
         ;;
     list)
         if [ -n "${2:-}" ]; then
-            # launchctl list <label> - show status for specific label
-            echo -e "PID\tStatus\tLabel"
-            echo -e "-\t0\t$2"
+            # launchctl list <label> - dict-style output (matches real launchctl)
+            cat <<DICTEOF
+{
+	"LimitLoadToSessionType" = "Aqua";
+	"Label" = "$2";
+	"LastExitStatus" = 0;
+	"TimeOut" = 30;
+};
+DICTEOF
         else
-            # launchctl list - list all
+            # launchctl list - list all (tab-separated)
             echo -e "PID\tStatus\tLabel"
             for plist in "${TEST_TEMP_DIR}/Library/LaunchAgents"/com.spaceheater.schedule.*.plist; do
                 [ -f "$plist" ] || continue
