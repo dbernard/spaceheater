@@ -565,17 +565,15 @@ get_display_name() {
 # Usage: IFS=$'\t' read -r cpus memory < <(parse_devcontainer_requirements <file_path>)
 parse_devcontainer_requirements() {
   local file_path="$1"
-  local cpus="" memory=""
+  local result
 
-  if ! cpus=$(jq -r '(.hostRequirements.cpus // "") | tostring' "$file_path" 2>/dev/null); then
+  if ! result=$(jq -r '[(.hostRequirements.cpus // ""), (.hostRequirements.memory // "")] | map(tostring) | join("\t")' "$file_path" 2>/dev/null); then
     warn "Failed to parse $file_path — file may be malformed"
-    cpus=""
-    memory=""
-  else
-    memory=$(jq -r '(.hostRequirements.memory // "") | tostring' "$file_path" 2>/dev/null) || memory=""
+    printf '\t'
+    return
   fi
 
-  printf '%s\t%s' "$cpus" "$memory"
+  printf '%s' "$result"
 }
 
 # ============================================================================
@@ -786,7 +784,7 @@ output_connection_json() {
   local codespace_data
   if ! codespace_data=$(gh api "/user/codespaces/$codespace_name" 2>/dev/null); then
     output_json_error "$action" "Failed to fetch codespace data from API" \
-      "{\"codespace_name\":\"$codespace_name\"}"
+      "$(jq -n --arg name "$codespace_name" '{codespace_name: $name}')"
     return 1
   fi
   codespace_data=$(echo "$codespace_data" | normalize_timestamps)
@@ -2118,6 +2116,9 @@ cmd_config() {
         fi
       elif [ -f ".devcontainer.json" ]; then
         devcontainer_path=".devcontainer.json"
+        if command -v jq &>/dev/null; then
+          IFS=$'\t' read -r devcontainer_cpus devcontainer_memory < <(parse_devcontainer_requirements ".devcontainer.json")
+        fi
       fi
     fi
 
@@ -2289,6 +2290,14 @@ cmd_config() {
         fi
       elif [ -f ".devcontainer.json" ]; then
         echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer.json (found)${NC}"
+
+        if command -v jq &>/dev/null; then
+          local cpus="" memory=""
+          IFS=$'\t' read -r cpus memory < <(parse_devcontainer_requirements ".devcontainer.json")
+          if [ -n "$cpus" ] || [ -n "$memory" ]; then
+            echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
+          fi
+        fi
       else
         echo -e "  ${ICON_INFO} Devcontainer:                  ${DIM}<none - will use GitHub default image>${NC}"
       fi
