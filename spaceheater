@@ -551,6 +551,31 @@ debug() {
 # HELPER FUNCTIONS
 # ============================================================================
 
+# Get a codespace's display name, falling back to the codespace name on failure.
+# Usage: display_name="$(get_display_name <codespace_name>)"
+get_display_name() {
+  local codespace_name="$1"
+  local display_name
+  display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName 2>/dev/null)" || display_name="$codespace_name"
+  echo "$display_name"
+}
+
+# Parse devcontainer.json hostRequirements, warning if the file is malformed.
+# Outputs tab-separated cpus and memory values on a single line.
+# Usage: IFS=$'\t' read -r cpus memory < <(parse_devcontainer_requirements <file_path>)
+parse_devcontainer_requirements() {
+  local file_path="$1"
+  local result
+
+  if ! result=$(jq -r '[(.hostRequirements.cpus // ""), (.hostRequirements.memory // "")] | map(tostring) | join("\t")' "$file_path" 2>/dev/null); then
+    warn "Failed to parse $file_path — file may be malformed"
+    printf '\t'
+    return
+  fi
+
+  printf '%s' "$result"
+}
+
 # ============================================================================
 # JSON OUTPUT UTILITIES
 # ============================================================================
@@ -755,9 +780,14 @@ output_connection_json() {
   local action="$1"
   local codespace_name="$2"
 
-  # Single fetch for all data
+  # Fetch codespace data (split from transform for clear failure detection)
   local codespace_data
-  codespace_data=$(gh api "/user/codespaces/$codespace_name" | normalize_timestamps) || true
+  if ! codespace_data=$(gh api "/user/codespaces/$codespace_name" 2>/dev/null); then
+    output_json_error "$action" "Failed to fetch codespace data from API" \
+      "$(jq -n --arg name "$codespace_name" '{codespace_name: $name}')"
+    return 1
+  fi
+  codespace_data=$(echo "$codespace_data" | normalize_timestamps)
 
   # Extract web_url from fetched data for browser connection method
   local web_url
@@ -1455,7 +1485,7 @@ cmd_autostart() {
 
   debug "Selected codespace: $codespace_name"
   local display_name
-  display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName)" || true
+  display_name="$(get_display_name "$codespace_name")"
 
   # Handle JSON output if requested
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
@@ -1597,7 +1627,7 @@ cmd_stop() {
   fi
 
   local display_name
-  display_name="$(gh codespace view -c "$codespace_name" --json displayName -q .displayName 2>/dev/null)" || true
+  display_name="$(get_display_name "$codespace_name")"
 
   # Handle JSON output if requested
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
@@ -2082,11 +2112,13 @@ cmd_config() {
       if [ -f ".devcontainer/devcontainer.json" ]; then
         devcontainer_path=".devcontainer/devcontainer.json"
         if command -v jq &>/dev/null; then
-          devcontainer_cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null)
-          devcontainer_memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null)
+          IFS=$'\t' read -r devcontainer_cpus devcontainer_memory < <(parse_devcontainer_requirements ".devcontainer/devcontainer.json")
         fi
       elif [ -f ".devcontainer.json" ]; then
         devcontainer_path=".devcontainer.json"
+        if command -v jq &>/dev/null; then
+          IFS=$'\t' read -r devcontainer_cpus devcontainer_memory < <(parse_devcontainer_requirements ".devcontainer.json")
+        fi
       fi
     fi
 
@@ -2250,16 +2282,22 @@ cmd_config() {
 
         # Try to extract hostRequirements if jq is available
         if command -v jq &>/dev/null; then
-          local cpus
-          cpus=$(jq -r '.hostRequirements.cpus // empty' .devcontainer/devcontainer.json 2>/dev/null) || true
-          local memory
-          memory=$(jq -r '.hostRequirements.memory // empty' .devcontainer/devcontainer.json 2>/dev/null) || true
+          local cpus="" memory=""
+          IFS=$'\t' read -r cpus memory < <(parse_devcontainer_requirements ".devcontainer/devcontainer.json")
           if [ -n "$cpus" ] || [ -n "$memory" ]; then
             echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
           fi
         fi
       elif [ -f ".devcontainer.json" ]; then
         echo -e "  ${ICON_CHECK} Devcontainer:                  ${GREEN}.devcontainer.json (found)${NC}"
+
+        if command -v jq &>/dev/null; then
+          local cpus="" memory=""
+          IFS=$'\t' read -r cpus memory < <(parse_devcontainer_requirements ".devcontainer.json")
+          if [ -n "$cpus" ] || [ -n "$memory" ]; then
+            echo -e "  ${ICON_CHECK} Devcontainer Requirements:     ${GREEN}${cpus:+$cpus cores}${cpus:+, }${memory:+$memory RAM}${NC}"
+          fi
+        fi
       else
         echo -e "  ${ICON_INFO} Devcontainer:                  ${DIM}<none - will use GitHub default image>${NC}"
       fi
