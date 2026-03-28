@@ -4,7 +4,7 @@ _spaceheater() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="create list start stop clean delete config version help"
+  local commands="create list start stop clean delete config schedule version help"
 
   # Complete first argument (command)
   if [ $cword -eq 1 ]; then
@@ -30,6 +30,17 @@ _spaceheater() {
       # Could potentially list codespace names here
       # For now, just return empty
       COMPREPLY=()
+      ;;
+    schedule)
+      if [ $cword -eq 2 ]; then
+        COMPREPLY=( $(compgen -W "set list remove status help" -- "${cur}") )
+      elif [ $cword -eq 3 ] && [ "${words[2]}" = "set" ]; then
+        COMPREPLY=( $(compgen -W "1 2 3" -- "${cur}") )
+      elif [ "${prev}" = "--preset" ]; then
+        COMPREPLY=( $(compgen -W "weekday-morning weekday-evening hourly daily twice-daily" -- "${cur}") )
+      elif [[ "${cur}" == --* ]]; then
+        COMPREPLY=( $(compgen -W "--preset --hour --minute --weekday --json" -- "${cur}") )
+      fi
       ;;
     *)
       COMPREPLY=()
