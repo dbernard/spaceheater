@@ -37,7 +37,7 @@ _spaceheater() {
       elif [ $cword -eq 3 ] && [ "${words[2]}" = "set" ]; then
         COMPREPLY=( $(compgen -W "1 2 3" -- "${cur}") )
       elif [ "${prev}" = "--preset" ]; then
-        COMPREPLY=( $(compgen -W "weekday-morning weekday-evening hourly daily twice-daily" -- "${cur}") )
+        COMPREPLY=( $(compgen -W "weekday-morning weekday-evening weekday-hourly hourly daily twice-daily" -- "${cur}") )
       elif [[ "${cur}" == --* ]]; then
         COMPREPLY=( $(compgen -W "--preset --hour --minute --weekday --json" -- "${cur}") )
       fi

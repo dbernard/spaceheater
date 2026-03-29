@@ -55,7 +55,7 @@ _spaceheater() {
                 set)
                   _arguments \
                     '1:count:(1 2 3)' \
-                    '--preset[Use a named schedule preset]:preset:(weekday-morning weekday-evening hourly daily twice-daily)' \
+                    '--preset[Use a named schedule preset]:preset:(weekday-morning weekday-evening weekday-hourly hourly daily twice-daily)' \
                     '--hour[Hour (0-23)]:hour:' \
                     '--minute[Minute (0-59)]:minute:' \
                     '--weekday[Weekday (0-6 or range)]:weekday:' \

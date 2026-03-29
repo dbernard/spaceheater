@@ -1736,7 +1736,7 @@ setup_schedule_env() {
     setup_schedule_env
 
     # Test each preset generates a valid plist
-    for preset in weekday-morning weekday-evening hourly daily twice-daily; do
+    for preset in weekday-morning weekday-evening weekday-hourly hourly daily twice-daily; do
         run "$SPACEHEATER" schedule set 1 --preset "$preset"
         [ "$status" -eq 0 ]
         # Clean up for next iteration

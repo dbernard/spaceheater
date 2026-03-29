@@ -2387,11 +2387,12 @@ _resolve_preset() {
   case "$preset" in
     weekday-morning)  echo "8 0 1,2,3,4,5" ;;
     weekday-evening)  echo "18 0 1,2,3,4,5" ;;
+    weekday-hourly)   echo "- 0 1,2,3,4,5" ;;
     hourly)           echo "- 0 -" ;;
     daily)            echo "9 0 -" ;;
     twice-daily)      echo "8,17 0 -" ;;
     *)
-      error "Unknown preset: $preset\nValid presets: weekday-morning, weekday-evening, hourly, daily, twice-daily"
+      error "Unknown preset: $preset\nValid presets: weekday-morning, weekday-evening, weekday-hourly, hourly, daily, twice-daily"
       ;;
   esac
 }
@@ -3307,6 +3308,7 @@ cmd_schedule_help() {
   echo -e "${BOLD}PRESETS${NC}"
   echo -e "  ${CYAN}weekday-morning${NC}  8:00 AM, Mon-Fri"
   echo -e "  ${CYAN}weekday-evening${NC}  6:00 PM, Mon-Fri"
+  echo -e "  ${CYAN}weekday-hourly${NC}   Every hour, Mon-Fri"
   echo -e "  ${CYAN}hourly${NC}           Every hour"
   echo -e "  ${CYAN}daily${NC}            9:00 AM, every day"
   echo -e "  ${CYAN}twice-daily${NC}      8:00 AM & 5:00 PM, every day\n"
