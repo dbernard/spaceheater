@@ -2479,8 +2479,9 @@ _launchd_generate_plist() {
   log_dir=$(_schedule_log_dir)
   local log_file="$log_dir/schedule.log"
 
-  # Build PATH with common locations
-  local schedule_path="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$HOME/.local/bin"
+  # Snapshot the user's current PATH so the schedule has access to all
+  # the same tools (gh, jq, python3, cat, etc.) that work right now
+  local schedule_path="$PATH"
 
   local calendar_xml
   calendar_xml=$(_generate_calendar_interval_xml "$hour" "$minute" "$weekday")

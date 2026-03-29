@@ -1598,9 +1598,11 @@ setup_schedule_env() {
 
     local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
     [[ $(cat "$plist_path") =~ "<key>PATH</key>" ]]
-    [[ $(cat "$plist_path") =~ "/usr/local/bin" ]]
-    # /bin is required for cat, date, mkdir, rm and other standard tools
-    [[ $(cat "$plist_path") =~ "/usr/bin:/bin:" ]]
+    # PATH should be a snapshot of the user's current PATH
+    local plist_content
+    plist_content=$(cat "$plist_path")
+    # Must contain the mock bin dir (first entry in test PATH)
+    [[ "$plist_content" =~ "$MOCK_BIN_DIR" ]]
 }
 
 @test "schedule set uses absolute path to spaceheater in ProgramArguments" {
