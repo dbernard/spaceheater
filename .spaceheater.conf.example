@@ -86,6 +86,14 @@
 # DISPLAY_NAME=
 
 # ==============================================================================
+# Schedule Settings
+# ==============================================================================
+
+# Directory for schedule log output (used by spaceheater schedule)
+# Default: ~/.local/share/spaceheater/logs
+# SCHEDULE_LOG_DIR=~/.local/share/spaceheater/logs
+
+# ==============================================================================
 # Debug Settings
 # ==============================================================================
 

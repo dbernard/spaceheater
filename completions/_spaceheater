@@ -12,6 +12,7 @@ _spaceheater() {
     'clean:Delete codespaces older than N days'
     'delete:Delete a specific codespace'
     'config:Show current configuration'
+    'schedule:Manage scheduled codespace pre-warming'
     'version:Show version information'
     'help:Show help message'
   )
@@ -34,6 +35,38 @@ _spaceheater() {
           ;;
         start|stop|delete)
           # Could list codespace names here in the future
+          ;;
+        schedule)
+          local -a schedule_commands
+          schedule_commands=(
+            'set:Create or update a schedule'
+            'list:List active schedules'
+            'remove:Remove a schedule'
+            'status:Show schedule status and recent runs'
+            'help:Show schedule help'
+          )
+          _arguments -C '1: :->subcmd' '*:: :->subargs'
+          case $state in
+            subcmd)
+              _describe 'schedule command' schedule_commands
+              ;;
+            subargs)
+              case $words[1] in
+                set)
+                  _arguments \
+                    '1:count:(1 2 3)' \
+                    '--preset[Use a named schedule preset]:preset:(weekday-morning weekday-evening weekday-hourly hourly daily twice-daily)' \
+                    '--hour[Hour (0-23)]:hour:' \
+                    '--minute[Minute (0-59)]:minute:' \
+                    '--weekday[Weekday (0-6 or range)]:weekday:' \
+                    '--json[Output as JSON]'
+                  ;;
+                remove)
+                  _arguments '--all[Remove all schedules]'
+                  ;;
+              esac
+              ;;
+          esac
           ;;
       esac
       ;;

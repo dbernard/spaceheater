@@ -43,6 +43,7 @@ Each command follows the pattern `cmd_<name>()`:
 | `cmd_clean` | Age-based cleanup with confirmation |
 | `cmd_delete` | Single codespace deletion with confirmation |
 | `cmd_config` | Subcommands: show, init, edit, validate |
+| `cmd_schedule` | Subcommands: set, list, remove, status, run. Uses macOS launchd for scheduling. |
 | `cmd_version` | Version display |
 | `cmd_help` | Usage text |
 
@@ -68,6 +69,24 @@ A `case` statement routing the first argument to `cmd_*` functions. Aliases: `ls
    - JSON output mode
 
 5. **Update completions** - Add to both `completions/spaceheater.bash` and `completions/_spaceheater`
+
+## Schedule System (launchd)
+
+The `schedule` command manages macOS launchd agents for automatic codespace pre-warming.
+
+### How it works
+- `schedule set` generates a plist in `~/Library/LaunchAgents/` and registers it with `launchctl`
+- The launchd agent calls `spaceheater schedule run <count> --json`, which is a **declarative top-up**: it counts existing HOT+WARM codespaces (via `count_hot_warm_codespaces()` using the JSON API) and only creates enough to reach the target
+- launchd fires missed jobs after wake from sleep, so scheduled runs happen even if the Mac was asleep
+
+### Key helpers
+- `_launchd_generate_plist()` - Generates the XML plist with schedule, env vars, and log paths
+- `_launchd_add()` / `_launchd_remove()` - Install/uninstall agents (with fallback from `bootstrap`/`bootout` to `load`/`unload` for older macOS)
+- `_launchd_list()` - Parses installed plists using `python3 plistlib`
+- `count_hot_warm_codespaces()` - Uses `jq` with `get_temperature_jq_filter()` to count HOT+WARM codespaces from the API
+
+### Platform
+Currently macOS-only. Cron support for Linux is planned as future work. The command functions call `_launchd_*` helpers directly (no abstraction layer).
 
 ## GitHub API Access
 

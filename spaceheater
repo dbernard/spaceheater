@@ -14,6 +14,10 @@
 #   spaceheater config init       Create a config file template
 #   spaceheater config edit       Edit your config file
 #   spaceheater config validate   Validate config file syntax
+#   spaceheater schedule set      Schedule automatic codespace pre-warming
+#   spaceheater schedule list     List active schedules
+#   spaceheater schedule remove   Remove a schedule
+#   spaceheater schedule status   Show schedule status
 #   spaceheater help              Show this help
 #   spaceheater version           Show version information
 #
@@ -478,6 +482,9 @@ init_config_vars() {
 
   # Debug mode
   DEBUG="${SPACEHEATER_DEBUG:-false}"
+
+  # Schedule log directory
+  SPACEHEATER_SCHEDULE_LOG_DIR="${SPACEHEATER_SCHEDULE_LOG_DIR:-}"
 }
 
 # Placeholder variables (will be initialized after config loading)
@@ -1177,7 +1184,9 @@ cmd_create() {
   # Handle JSON output
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
     if [ ${#created_names[@]} -gt 0 ]; then
-      fetch_codespaces_by_names "${created_names[@]}" | output_multiple_codespaces_json "create"
+      fetch_codespaces_by_names "${created_names[@]}" | output_multiple_codespaces_json "create" |
+        jq --argjson created "$created" --argjson failed "$failed" --argjson requested "$count" \
+          '. + {created_count: $created, failed_count: $failed, requested_count: $requested}'
     else
       # Output error JSON if all creations failed
       output_json_error "create" "Failed to create any codespaces" "{\"requested_count\":$count,\"created_count\":0,\"failed_count\":$failed}"
@@ -2325,6 +2334,1005 @@ cmd_config() {
   fi
 }
 
+# ============================================================================
+# SCHEDULE COMMAND - LAUNCHD INTEGRATION
+# ============================================================================
+
+# Platform detection
+_is_macos() {
+  [ "$(uname -s)" = "Darwin" ]
+}
+
+# Resolve absolute path to spaceheater executable
+_spaceheater_path() {
+  if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    local resolved
+    resolved=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
+    echo "$resolved"
+  elif command -v spaceheater &>/dev/null; then
+    command -v spaceheater
+  else
+    echo "$0"
+  fi
+}
+
+# Convert owner/repo to slug for labels/filenames
+_repo_slug() {
+  local repo="$1"
+  echo "${repo//\//-}"
+}
+
+# Get launchd label for a repo
+_schedule_label() {
+  local repo="$1"
+  echo "com.spaceheater.schedule.$(_repo_slug "$repo")"
+}
+
+# Get plist file path for a repo
+_schedule_plist_path() {
+  local repo="$1"
+  echo "$HOME/Library/LaunchAgents/$(_schedule_label "$repo").plist"
+}
+
+# Get log directory path
+_schedule_log_dir() {
+  echo "${SPACEHEATER_SCHEDULE_LOG_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/spaceheater/logs}"
+}
+
+# Resolve preset name to hour/minute/weekday values
+# Outputs: hour minute weekday (space-separated)
+# weekday is comma-separated list or empty for "every day"
+_resolve_preset() {
+  local preset="$1"
+  case "$preset" in
+    weekday-morning)  echo "8 0 1,2,3,4,5" ;;
+    weekday-evening)  echo "18 0 1,2,3,4,5" ;;
+    weekday-hourly)   echo "- 0 1,2,3,4,5" ;;
+    hourly)           echo "- 0 -" ;;
+    daily)            echo "9 0 -" ;;
+    twice-daily)      echo "8,17 0 -" ;;
+    *)
+      error "Unknown preset: $preset\nValid presets: weekday-morning, weekday-evening, weekday-hourly, hourly, daily, twice-daily"
+      ;;
+  esac
+}
+
+# Generate StartCalendarInterval XML from hour/minute/weekday values
+# hour: integer, comma-separated list, or "-" for every hour
+# minute: integer
+# weekday: comma-separated list (0=Sunday) or "-" for every day
+_generate_calendar_interval_xml() {
+  local hour="$1"
+  local minute="$2"
+  local weekday="$3"
+
+  local xml="    <key>StartCalendarInterval</key>"$'\n'
+
+  # Build list of (hour, weekday) combinations to expand
+  local -a hours=()
+  local -a weekdays=()
+
+  if [ "$hour" = "-" ]; then
+    hours=("-")
+  else
+    IFS=',' read -ra hours <<< "$hour"
+  fi
+
+  if [ "$weekday" = "-" ]; then
+    weekdays=("-")
+  else
+    IFS=',' read -ra weekdays <<< "$weekday"
+  fi
+
+  # Count total dicts to determine if we need an array wrapper
+  local total_dicts=0
+  total_dicts=$(( ${#hours[@]} * ${#weekdays[@]} ))
+
+  if [ "$total_dicts" -gt 1 ]; then
+    xml+="    <array>"$'\n'
+  fi
+
+  for h in "${hours[@]}"; do
+    for w in "${weekdays[@]}"; do
+      if [ "$total_dicts" -gt 1 ]; then
+        xml+="      <dict>"$'\n'
+      else
+        xml+="    <dict>"$'\n'
+      fi
+      if [ "$h" != "-" ]; then
+        xml+="        <key>Hour</key>"$'\n'
+        xml+="        <integer>$h</integer>"$'\n'
+      fi
+      xml+="        <key>Minute</key>"$'\n'
+      xml+="        <integer>$minute</integer>"$'\n'
+      if [ "$w" != "-" ]; then
+        xml+="        <key>Weekday</key>"$'\n'
+        xml+="        <integer>$w</integer>"$'\n'
+      fi
+      if [ "$total_dicts" -gt 1 ]; then
+        xml+="      </dict>"$'\n'
+      else
+        xml+="    </dict>"$'\n'
+      fi
+    done
+  done
+
+  if [ "$total_dicts" -gt 1 ]; then
+    xml+="    </array>"
+  fi
+
+  echo "$xml"
+}
+
+# Generate a complete launchd plist file
+_launchd_generate_plist() {
+  local label="$1"
+  local repo="$2"
+  local count="$3"
+  local hour="$4"
+  local minute="$5"
+  local weekday="$6"
+
+  local spaceheater_path
+  spaceheater_path=$(_spaceheater_path)
+  local log_dir
+  log_dir=$(_schedule_log_dir)
+  local log_file="$log_dir/schedule.log"
+
+  # Snapshot the user's current PATH so the schedule has access to all
+  # the same tools (gh, jq, python3, cat, etc.) that work right now
+  local schedule_path="$PATH"
+
+  local calendar_xml
+  calendar_xml=$(_generate_calendar_interval_xml "$hour" "$minute" "$weekday")
+
+  cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$label</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$spaceheater_path</string>
+        <string>schedule</string>
+        <string>run</string>
+        <string>$count</string>
+        <string>--json</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SPACEHEATER_REPO</key>
+        <string>$repo</string>
+        <key>PATH</key>
+        <string>$schedule_path</string>
+    </dict>
+$calendar_xml
+    <key>StandardOutPath</key>
+    <string>$log_file</string>
+    <key>StandardErrorPath</key>
+    <string>$log_file</string>
+</dict>
+</plist>
+PLIST
+}
+
+# Install a launchd agent from a plist file
+_launchd_add() {
+  local plist_path="$1"
+
+  # Try modern launchctl API first, fall back to legacy
+  if launchctl bootstrap "gui/$(id -u)" "$plist_path" 2>/dev/null; then
+    return 0
+  elif launchctl load "$plist_path" 2>/dev/null; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Remove a launchd agent and delete its plist
+_launchd_remove() {
+  local label="$1"
+  local plist_path="$2"
+
+  # Try modern API first, fall back to legacy
+  launchctl bootout "gui/$(id -u)" "$plist_path" 2>/dev/null ||
+    launchctl unload "$plist_path" 2>/dev/null || true
+
+  # Delete the plist file
+  rm -f "$plist_path"
+}
+
+# List all spaceheater schedule plists
+# Outputs tab-separated: label repo count hour minute weekday plist_path
+_launchd_list() {
+  local launch_agents_dir="$HOME/Library/LaunchAgents"
+  local found=0
+
+  for plist in "$launch_agents_dir"/com.spaceheater.schedule.*.plist; do
+    [ -f "$plist" ] || continue
+    found=1
+
+    # Parse plist to extract values using python3 (available on macOS)
+    python3 - "$plist" <<'PARSE_PLIST' 2>/dev/null || continue
+import plistlib
+import sys
+
+plist_path = sys.argv[1]
+with open(plist_path, 'rb') as f:
+    pl = plistlib.load(f)
+
+label = pl.get('Label', '')
+env = pl.get('EnvironmentVariables', {})
+repo = env.get('SPACEHEATER_REPO', '')
+args = pl.get('ProgramArguments', [])
+
+# Extract count from args: schedule run <count> --json
+count = ''
+for i, a in enumerate(args):
+    if a == 'run' and i + 1 < len(args):
+        count = args[i + 1]
+        break
+
+# Extract schedule from StartCalendarInterval
+intervals = pl.get('StartCalendarInterval', {})
+if isinstance(intervals, dict):
+    intervals = [intervals]
+
+hours = set()
+minutes = set()
+weekdays = set()
+for iv in intervals:
+    if 'Hour' in iv:
+        hours.add(iv['Hour'])
+    if 'Minute' in iv:
+        minutes.add(iv['Minute'])
+    if 'Weekday' in iv:
+        weekdays.add(iv['Weekday'])
+
+hour_str = ','.join(str(h) for h in sorted(hours)) if hours else '-'
+minute_str = ','.join(str(m) for m in sorted(minutes)) if minutes else '0'
+weekday_str = ','.join(str(w) for w in sorted(weekdays)) if weekdays else '-'
+
+print(f'{label}\t{repo}\t{count}\t{hour_str}\t{minute_str}\t{weekday_str}\t{plist_path}')
+PARSE_PLIST
+  done
+
+  if [ "$found" -eq 1 ]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Get launchctl status for a label
+# Outputs: pid last_exit_status
+# Note: `launchctl list <label>` returns a dict-style output, not tab-separated
+_launchd_status() {
+  local label="$1"
+
+  local output
+  if output=$(launchctl list "$label" 2>/dev/null); then
+    # Parse dict-style output: "PID" = 12345; / "LastExitStatus" = 0;
+    local pid=""
+    local exit_status=""
+    # Extract PID (only present when process is running)
+    pid=$(echo "$output" | awk -F '= ' '/"PID"/ {gsub(/[^0-9]/,"",$2); print $2}' 2>/dev/null)
+    exit_status=$(echo "$output" | awk -F '= ' '/LastExitStatus/ {gsub(/[^0-9]/,"",$2); print $2}' 2>/dev/null)
+    # Output pipe-separated to avoid IFS read issues with empty leading fields
+    echo "${pid:-}|${exit_status:-}"
+  else
+    echo "|"
+  fi
+}
+
+# Count HOT + WARM codespaces for the current repo using JSON output
+# Reuses the shared filter helpers so temperature logic stays in one place
+count_hot_warm_codespaces() {
+  local age_filter
+  age_filter=$(get_age_calculation_filter)
+  local git_clean_filter
+  git_clean_filter=$(get_git_clean_jq_filter)
+  local temp_filter
+  temp_filter=$(get_temperature_jq_filter)
+
+  local count
+  count=$(get_all_codespaces | normalize_timestamps | jq "
+    (now | todate) as \$current_time |
+    [.codespaces[] |
+      $age_filter
+      $git_clean_filter as \$is_git_clean |
+      $temp_filter as \$temp |
+      select(\$temp == \"hot\" or \$temp == \"warm\")
+    ] | length
+  " 2>/dev/null) || count=0
+
+  echo "$count"
+}
+
+# Describe a schedule in human-readable form
+_describe_schedule() {
+  local hour="$1"
+  local minute="$2"
+  local weekday="$3"
+
+  local time_desc=""
+  local day_desc=""
+
+  # Format time
+  if [ "$hour" = "-" ]; then
+    time_desc="every hour at :$(printf '%02d' "$minute")"
+  else
+    local -a hour_parts=()
+    IFS=',' read -ra hour_parts <<< "$hour"
+    local -a time_parts=()
+    for h in "${hour_parts[@]}"; do
+      local period="AM"
+      local display_h="$h"
+      if [ "$h" -ge 12 ]; then
+        period="PM"
+        if [ "$h" -gt 12 ]; then
+          display_h=$((h - 12))
+        fi
+      fi
+      if [ "$h" -eq 0 ]; then
+        display_h=12
+        period="AM"
+      fi
+      time_parts+=("${display_h}:$(printf '%02d' "$minute") ${period}")
+    done
+    time_desc=$(IFS=', '; echo "${time_parts[*]}")
+  fi
+
+  # Format days
+  if [ "$weekday" = "-" ]; then
+    day_desc="every day"
+  else
+    local -a day_names=("Sun" "Mon" "Tue" "Wed" "Thu" "Fri" "Sat")
+    local -a day_parts=()
+    IFS=',' read -ra wd_parts <<< "$weekday"
+
+    # Check if it's weekdays (1-5)
+    if [ "${#wd_parts[@]}" -eq 5 ]; then
+      local is_weekdays=true
+      for w in "${wd_parts[@]}"; do
+        if [ "$w" -lt 1 ] || [ "$w" -gt 5 ]; then
+          is_weekdays=false
+          break
+        fi
+      done
+      if [ "$is_weekdays" = "true" ]; then
+        day_desc="weekdays"
+      fi
+    fi
+
+    if [ -z "$day_desc" ]; then
+      for w in "${wd_parts[@]}"; do
+        day_parts+=("${day_names[$w]}")
+      done
+      day_desc=$(IFS=', '; echo "${day_parts[*]}")
+    fi
+  fi
+
+  echo "$time_desc, $day_desc"
+}
+
+# ============================================================================
+# SCHEDULE COMMAND IMPLEMENTATIONS
+# ============================================================================
+
+cmd_schedule() {
+  local subcmd="${1:-help}"
+  shift || true
+
+  case "$subcmd" in
+    set)
+      cmd_schedule_set "$@"
+      ;;
+    list|ls)
+      cmd_schedule_list "$@"
+      ;;
+    remove|rm)
+      cmd_schedule_remove "$@"
+      ;;
+    status)
+      cmd_schedule_status "$@"
+      ;;
+    run)
+      cmd_schedule_run "$@"
+      ;;
+    help|--help|-h)
+      cmd_schedule_help
+      ;;
+    *)
+      error "Unknown schedule subcommand: $subcmd\nValid subcommands: set, list, remove, status"
+      ;;
+  esac
+}
+
+cmd_schedule_set() {
+  if ! _is_macos; then
+    error "Scheduling requires macOS (launchd). Cron support is planned for a future release."
+  fi
+
+  # Parse arguments
+  local count=""
+  local preset=""
+  local hour=""
+  local minute=""
+  local weekday=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --preset)
+        [ $# -ge 2 ] || error "Missing value for --preset"
+        preset="$2"
+        shift 2
+        ;;
+      --preset=*)
+        preset="${1#--preset=}"
+        shift
+        ;;
+      --hour)
+        [ $# -ge 2 ] || error "Missing value for --hour"
+        hour="$2"
+        shift 2
+        ;;
+      --hour=*)
+        hour="${1#--hour=}"
+        shift
+        ;;
+      --minute)
+        [ $# -ge 2 ] || error "Missing value for --minute"
+        minute="$2"
+        shift 2
+        ;;
+      --minute=*)
+        minute="${1#--minute=}"
+        shift
+        ;;
+      --weekday)
+        [ $# -ge 2 ] || error "Missing value for --weekday"
+        weekday="$2"
+        shift 2
+        ;;
+      --weekday=*)
+        weekday="${1#--weekday=}"
+        shift
+        ;;
+      -*)
+        error "Unknown option: $1"
+        ;;
+      *)
+        if [ -z "$count" ]; then
+          count="$1"
+        else
+          error "Unexpected argument: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  # Validate count
+  if [ -z "$count" ]; then
+    error "Missing required argument: <count>\nUsage: spaceheater schedule set <count> --preset <name>"
+  fi
+
+  if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -lt 1 ] || [ "$count" -gt 3 ]; then
+    error "Count must be between 1 and 3"
+  fi
+
+  # Resolve schedule: preset or custom flags
+  if [ -n "$preset" ]; then
+    if [ -n "$hour" ] || [ -n "$minute" ] || [ -n "$weekday" ]; then
+      error "Cannot use --preset with --hour/--minute/--weekday"
+    fi
+    local schedule_values
+    schedule_values=$(_resolve_preset "$preset")
+    read -r hour minute weekday <<< "$schedule_values"
+  else
+    # Custom schedule - require at least --hour or --minute
+    if [ -z "$hour" ] && [ -z "$minute" ]; then
+      error "Must specify --preset <name> or --hour/--minute for custom schedule"
+    fi
+    hour="${hour:--}"
+    minute="${minute:-0}"
+    weekday="${weekday:--}"
+
+    # Expand weekday ranges (e.g., 1-5 → 1,2,3,4,5)
+    if [[ "$weekday" =~ ^([0-6])-([0-6])$ ]]; then
+      local range_start="${BASH_REMATCH[1]}"
+      local range_end="${BASH_REMATCH[2]}"
+      if [ "$range_start" -gt "$range_end" ]; then
+        error "Invalid weekday range: $weekday (start must be <= end, e.g., 1-5)"
+      fi
+      weekday=""
+      for ((d=range_start; d<=range_end; d++)); do
+        [ -n "$weekday" ] && weekday+=","
+        weekday+="$d"
+      done
+    fi
+
+    # Validate hour values
+    if [ "$hour" != "-" ]; then
+      local -a hour_vals=()
+      IFS=',' read -ra hour_vals <<< "$hour"
+      for h in "${hour_vals[@]}"; do
+        if ! [[ "$h" =~ ^[0-9]+$ ]] || [ "$h" -gt 23 ]; then
+          error "Invalid hour: $h (must be 0-23)"
+        fi
+      done
+    fi
+
+    # Validate minute
+    if ! [[ "$minute" =~ ^[0-9]+$ ]] || [ "$minute" -gt 59 ]; then
+      error "Invalid minute: $minute (must be 0-59)"
+    fi
+
+    # Validate weekday values
+    if [ "$weekday" != "-" ]; then
+      local -a wd_vals=()
+      IFS=',' read -ra wd_vals <<< "$weekday"
+      for w in "${wd_vals[@]}"; do
+        if ! [[ "$w" =~ ^[0-6]$ ]]; then
+          error "Invalid weekday: $w (must be 0-6, where 0=Sunday)"
+        fi
+      done
+    fi
+  fi
+
+  init_repo_config
+
+  local label
+  label=$(_schedule_label "$REPO")
+  local plist_path
+  plist_path=$(_schedule_plist_path "$REPO")
+  local log_dir
+  log_dir=$(_schedule_log_dir)
+
+  # Remove existing schedule for this repo if present
+  if [ -f "$plist_path" ]; then
+    _launchd_remove "$label" "$plist_path"
+    debug "Removed existing schedule for $REPO"
+  fi
+
+  # Create log directory
+  mkdir -p "$log_dir"
+
+  # Generate and write plist
+  _launchd_generate_plist "$label" "$REPO" "$count" "$hour" "$minute" "$weekday" > "$plist_path"
+
+  # Install the agent
+  if ! _launchd_add "$plist_path"; then
+    rm -f "$plist_path"
+    error "Failed to install launchd agent"
+  fi
+
+  local schedule_desc
+  schedule_desc=$(_describe_schedule "$hour" "$minute" "$weekday")
+
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    jq -n \
+      --arg action "schedule_set" \
+      --arg repo "$REPO" \
+      --argjson count "$count" \
+      --arg schedule "$schedule_desc" \
+      --arg label "$label" \
+      --arg plist_path "$plist_path" \
+      --arg log_dir "$log_dir" \
+      '{
+        action: $action,
+        success: true,
+        schedule: {
+          repository: $repo,
+          desired_count: $count,
+          schedule: $schedule,
+          label: $label,
+          plist_path: $plist_path,
+          log_dir: $log_dir
+        },
+        timestamp: (now | todate)
+      }'
+  else
+    success "Schedule created for $REPO"
+    info "  Target: $count HOT/WARM codespace(s)"
+    info "  Schedule: $schedule_desc"
+    info "  Log: $log_dir/schedule.log"
+  fi
+}
+
+cmd_schedule_list() {
+  if ! _is_macos; then
+    error "Scheduling requires macOS (launchd). Cron support is planned for a future release."
+  fi
+
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    local json_array="[]"
+
+    while IFS=$'\t' read -r label repo count hour minute weekday plist_path; do
+      local schedule_desc
+      schedule_desc=$(_describe_schedule "$hour" "$minute" "$weekday")
+
+      json_array=$(echo "$json_array" | jq \
+        --arg label "$label" \
+        --arg repo "$repo" \
+        --argjson count "$count" \
+        --arg schedule "$schedule_desc" \
+        --arg hour "$hour" \
+        --arg minute "$minute" \
+        --arg weekday "$weekday" \
+        --arg plist_path "$plist_path" \
+        '. += [{
+          label: $label,
+          repository: $repo,
+          desired_count: $count,
+          schedule: $schedule,
+          hour: $hour,
+          minute: $minute,
+          weekday: $weekday,
+          plist_path: $plist_path
+        }]')
+    done < <(_launchd_list 2>/dev/null || true)
+
+    jq -n \
+      --argjson schedules "$json_array" \
+      '{
+        action: "schedule_list",
+        success: true,
+        schedules: $schedules,
+        count: ($schedules | length),
+        timestamp: (now | todate)
+      }'
+    return
+  fi
+
+  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} - Scheduled Operations"
+  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+
+  local found=0
+  while IFS=$'\t' read -r label repo count hour minute weekday plist_path; do
+    found=1
+    local schedule_desc
+    schedule_desc=$(_describe_schedule "$hour" "$minute" "$weekday")
+
+    echo -e "  ${CYAN}$repo${NC}"
+    echo -e "    Target:   ${GREEN}$count${NC} HOT/WARM codespace(s)"
+    echo -e "    Schedule: $schedule_desc"
+    echo ""
+  done < <(_launchd_list 2>/dev/null || true)
+
+  if [ "$found" -eq 0 ]; then
+    info "No schedules configured."
+    info "Run 'spaceheater schedule set <count> --preset <name>' to create one."
+  fi
+}
+
+cmd_schedule_remove() {
+  if ! _is_macos; then
+    error "Scheduling requires macOS (launchd). Cron support is planned for a future release."
+  fi
+
+  local target="${1:-}"
+  local remove_all=false
+
+  if [ "$target" = "--all" ]; then
+    remove_all=true
+  fi
+
+  if [ "$remove_all" = "true" ]; then
+    local removed=0
+    while IFS=$'\t' read -r label repo count hour minute weekday plist_path; do
+      _launchd_remove "$label" "$plist_path"
+      removed=$((removed + 1))
+    done < <(_launchd_list 2>/dev/null || true)
+
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      jq -n \
+        --arg action "schedule_remove" \
+        --argjson removed "$removed" \
+        '{
+          action: $action,
+          success: true,
+          removed_count: $removed,
+          timestamp: (now | todate)
+        }'
+    else
+      if [ "$removed" -gt 0 ]; then
+        success "Removed $removed schedule(s)"
+      else
+        info "No schedules to remove."
+      fi
+    fi
+    return
+  fi
+
+  # Remove schedule for specific repo (default: current repo)
+  local repo
+  if [ -n "$target" ]; then
+    repo="$target"
+  else
+    init_repo_config
+    repo="$REPO"
+  fi
+
+  local label
+  label=$(_schedule_label "$repo")
+  local plist_path
+  plist_path=$(_schedule_plist_path "$repo")
+
+  if [ ! -f "$plist_path" ]; then
+    if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+      output_json_error "schedule_remove" "No schedule found for $repo"
+    else
+      warn "No schedule found for $repo"
+    fi
+    return 1
+  fi
+
+  _launchd_remove "$label" "$plist_path"
+
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    jq -n \
+      --arg action "schedule_remove" \
+      --arg repo "$repo" \
+      '{
+        action: $action,
+        success: true,
+        repository: $repo,
+        timestamp: (now | todate)
+      }'
+  else
+    success "Removed schedule for $repo"
+  fi
+}
+
+cmd_schedule_status() {
+  if ! _is_macos; then
+    error "Scheduling requires macOS (launchd). Cron support is planned for a future release."
+  fi
+
+  if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
+    local json_array="[]"
+
+    while IFS=$'\t' read -r label repo count hour minute weekday plist_path; do
+      local schedule_desc
+      schedule_desc=$(_describe_schedule "$hour" "$minute" "$weekday")
+
+      local status_output
+      status_output=$(_launchd_status "$label")
+      local pid=""
+      local exit_status=""
+      IFS='|' read -r pid exit_status <<< "$status_output"
+
+      json_array=$(echo "$json_array" | jq \
+        --arg label "$label" \
+        --arg repo "$repo" \
+        --argjson count "$count" \
+        --arg schedule "$schedule_desc" \
+        --arg pid "$pid" \
+        --arg exit_status "$exit_status" \
+        '. += [{
+          label: $label,
+          repository: $repo,
+          desired_count: $count,
+          schedule: $schedule,
+          pid: (if $pid != "" then ($pid | tonumber) else null end),
+          last_exit_status: (if $exit_status != "" then ($exit_status | tonumber) else null end)
+        }]')
+    done < <(_launchd_list 2>/dev/null || true)
+
+    local log_file
+    log_file="$(_schedule_log_dir)/schedule.log"
+    local recent_logs="null"
+    if [ -f "$log_file" ]; then
+      recent_logs=$(tail -5 "$log_file" 2>/dev/null | jq -Rs 'split("\n") | map(select(. != ""))' 2>/dev/null || echo "null")
+    fi
+
+    jq -n \
+      --argjson schedules "$json_array" \
+      --argjson recent_logs "$recent_logs" \
+      '{
+        action: "schedule_status",
+        success: true,
+        schedules: $schedules,
+        count: ($schedules | length),
+        recent_logs: $recent_logs,
+        timestamp: (now | todate)
+      }'
+    return
+  fi
+
+  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER${NC} - Schedule Status"
+  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+
+  local found=0
+  while IFS=$'\t' read -r label repo count hour minute weekday plist_path; do
+    found=1
+    local schedule_desc
+    schedule_desc=$(_describe_schedule "$hour" "$minute" "$weekday")
+
+    local status_output
+    status_output=$(_launchd_status "$label")
+    local pid=""
+    local exit_status=""
+    IFS='|' read -r pid exit_status <<< "$status_output"
+
+    echo -e "  ${CYAN}$repo${NC}"
+    echo -e "    Target:   ${GREEN}$count${NC} HOT/WARM codespace(s)"
+    echo -e "    Schedule: $schedule_desc"
+    if [ -n "$pid" ]; then
+      echo -e "    Status:   ${GREEN}Running${NC} (PID: $pid)"
+    elif [ -n "$exit_status" ]; then
+      if [ "$exit_status" = "0" ]; then
+        echo -e "    Last run: ${GREEN}Success${NC} (exit: 0)"
+      else
+        echo -e "    Last run: ${RED}Failed${NC} (exit: $exit_status)"
+      fi
+    else
+      echo -e "    Status:   ${DIM}Not loaded${NC}"
+    fi
+    echo ""
+  done < <(_launchd_list 2>/dev/null || true)
+
+  if [ "$found" -eq 0 ]; then
+    info "No schedules configured."
+    return
+  fi
+
+  # Show recent log entries
+  local log_file
+  log_file="$(_schedule_log_dir)/schedule.log"
+  if [ -f "$log_file" ]; then
+    echo -e "${BOLD}RECENT LOG${NC}"
+    echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}"
+    tail -10 "$log_file" 2>/dev/null || true
+    echo ""
+  fi
+}
+
+cmd_schedule_run() {
+  local desired="${1:-}"
+
+  if [ -z "$desired" ]; then
+    error "Missing required argument: <desired_count>\nUsage: spaceheater schedule run <count>"
+  fi
+
+  if ! [[ "$desired" =~ ^[0-9]+$ ]] || [ "$desired" -lt 1 ] || [ "$desired" -gt 3 ]; then
+    error "Count must be between 1 and 3"
+  fi
+
+  # Always use JSON mode internally for schedule runs
+  OUTPUT_FORMAT="json"
+
+  init_repo_config
+
+  # Count existing HOT + WARM codespaces
+  local existing
+  existing=$(count_hot_warm_codespaces)
+
+  local deficit=$((desired - existing))
+
+  if [ "$deficit" -le 0 ]; then
+    jq -n \
+      --arg action "schedule_run" \
+      --arg repo "$REPO" \
+      --argjson desired "$desired" \
+      --argjson existing "$existing" \
+      '{
+        action: $action,
+        success: true,
+        repository: $repo,
+        desired_count: $desired,
+        existing_hot_warm: $existing,
+        created_count: 0,
+        skipped: true,
+        message: "Target already met",
+        timestamp: (now | todate)
+      }'
+    return
+  fi
+
+  # Cap at 3
+  if [ "$deficit" -gt 3 ]; then
+    deficit=3
+  fi
+
+  # Create the deficit codespaces and capture the output
+  local create_output
+  create_output=$(cmd_create "$deficit" 2>&1) || true
+
+  # Wrap cmd_create's JSON output with schedule_run context
+  if echo "$create_output" | jq empty 2>/dev/null; then
+    echo "$create_output" | jq \
+      --arg action "schedule_run" \
+      --arg repo "$REPO" \
+      --argjson desired "$desired" \
+      --argjson existing "$existing" \
+      --argjson deficit "$deficit" \
+      '{
+        action: $action,
+        success: .success,
+        repository: $repo,
+        desired_count: $desired,
+        existing_hot_warm: $existing,
+        created_count: .created_count,
+        skipped: false,
+        create_result: .,
+        timestamp: (now | todate)
+      }'
+  else
+    # cmd_create didn't produce valid JSON -- report what we can
+    jq -n \
+      --arg action "schedule_run" \
+      --arg repo "$REPO" \
+      --argjson desired "$desired" \
+      --argjson existing "$existing" \
+      --argjson deficit "$deficit" \
+      --arg create_output "$create_output" \
+      '{
+        action: $action,
+        success: false,
+        repository: $repo,
+        desired_count: $desired,
+        existing_hot_warm: $existing,
+        created_count: 0,
+        skipped: false,
+        error: $create_output,
+        timestamp: (now | todate)
+      }'
+  fi
+}
+
+cmd_schedule_help() {
+  echo -e "${BOLD}${ICON_BRAND} SPACEHEATER SCHEDULE${NC} - Automatic codespace pre-warming"
+  echo -e "${DIM}────────────────────────────────────────────────────────────────${NC}\n"
+
+  echo -e "${BOLD}USAGE${NC}"
+  echo -e "  spaceheater schedule <subcommand> [options]\n"
+
+  echo -e "${BOLD}SUBCOMMANDS${NC}"
+  echo -e "  ${CYAN}set <count>${NC}      Create or update a schedule"
+  echo -e "  ${CYAN}list${NC}             List active schedules"
+  echo -e "  ${CYAN}remove${NC}           Remove a schedule"
+  echo -e "  ${CYAN}status${NC}           Show schedules and recent run results"
+  echo -e "  ${CYAN}help${NC}             Show this help\n"
+
+  echo -e "${BOLD}SCHEDULE OPTIONS${NC}"
+  echo -e "  ${CYAN}--preset <name>${NC}  Use a named schedule preset"
+  echo -e "  ${CYAN}--hour <H>${NC}       Hour (0-23, or comma-separated)"
+  echo -e "  ${CYAN}--minute <M>${NC}     Minute (0-59, default: 0)"
+  echo -e "  ${CYAN}--weekday <D>${NC}    Weekday (0-6, 0=Sun, or range like 1-5)\n"
+
+  echo -e "${BOLD}PRESETS${NC}"
+  echo -e "  ${CYAN}weekday-morning${NC}  8:00 AM, Mon-Fri"
+  echo -e "  ${CYAN}weekday-evening${NC}  6:00 PM, Mon-Fri"
+  echo -e "  ${CYAN}weekday-hourly${NC}   Every hour, Mon-Fri"
+  echo -e "  ${CYAN}hourly${NC}           Every hour"
+  echo -e "  ${CYAN}daily${NC}            9:00 AM, every day"
+  echo -e "  ${CYAN}twice-daily${NC}      8:00 AM & 5:00 PM, every day\n"
+
+  echo -e "${BOLD}HOW IT WORKS${NC}"
+  echo -e "  Schedules use macOS launchd to run a smart top-up job."
+  echo -e "  Each run checks how many HOT/WARM codespaces exist and"
+  echo -e "  only creates enough to reach your target count."
+  echo -e "  Jobs run even if your Mac was asleep at the scheduled time.\n"
+
+  echo -e "${BOLD}EXAMPLES${NC}"
+  echo -e "  ${DIM}# Ensure 2 warm codespaces every weekday morning${NC}"
+  echo -e "  ${GREEN}spaceheater schedule set 2 --preset weekday-morning${NC}\n"
+  echo -e "  ${DIM}# Custom: ensure 1 codespace at 7:30 AM on weekdays${NC}"
+  echo -e "  ${GREEN}spaceheater schedule set 1 --hour 7 --minute 30 --weekday 1-5${NC}\n"
+  echo -e "  ${DIM}# List all schedules${NC}"
+  echo -e "  ${GREEN}spaceheater schedule list${NC}\n"
+  echo -e "  ${DIM}# Remove schedule for current repo${NC}"
+  echo -e "  ${GREEN}spaceheater schedule remove${NC}\n"
+  echo -e "  ${DIM}# Remove all schedules${NC}"
+  echo -e "  ${GREEN}spaceheater schedule remove --all${NC}"
+}
+
 cmd_version() {
   if [ "${OUTPUT_FORMAT:-}" = "json" ]; then
     # Get git commit hash if available
@@ -2393,6 +3401,10 @@ cmd_help() {
   echo -e "  ${CYAN}config init${NC}        Create a config file template"
   echo -e "  ${CYAN}config edit${NC}        Edit your config file"
   echo -e "  ${CYAN}config validate${NC}    Validate config file syntax"
+  echo -e "  ${CYAN}schedule set${NC}       Schedule automatic codespace pre-warming (macOS)"
+  echo -e "  ${CYAN}schedule list${NC}      List active schedules"
+  echo -e "  ${CYAN}schedule remove${NC}    Remove a schedule"
+  echo -e "  ${CYAN}schedule status${NC}    Show schedules and recent run results"
   echo -e "  ${CYAN}version${NC}            Show version information"
   echo -e "  ${CYAN}help${NC}               Show this help"
 
@@ -2424,6 +3436,9 @@ cmd_help() {
   echo ""
   echo -e "  ${DIM}# Clean codespaces older than 30 days${NC}"
   echo -e "  ${GREEN}spaceheater clean 30${NC}"
+  echo ""
+  echo -e "  ${DIM}# Schedule: ensure 2 warm codespaces every weekday morning${NC}"
+  echo -e "  ${GREEN}spaceheater schedule set 2 --preset weekday-morning${NC}"
 
   echo ""
   echo -e "${BOLD}QUICK START${NC}"
@@ -2496,7 +3511,7 @@ main() {
 
   # Track which SPACEHEATER_* variables were set in the environment
   # before loading config files (these take highest precedence)
-  for var in REPO BRANCH MACHINE RETENTION IDLE_TIMEOUT DEVCONTAINER_PATH DISPLAY_NAME LOCATION CONNECT DEBUG UI_STYLE; do
+  for var in REPO BRANCH MACHINE RETENTION IDLE_TIMEOUT DEVCONTAINER_PATH DISPLAY_NAME LOCATION CONNECT DEBUG UI_STYLE SCHEDULE_LOG_DIR; do
     local env_var="SPACEHEATER_${var}"
     if [ -n "${!env_var:-}" ]; then
       ENV_VARS_SET="$ENV_VARS_SET $env_var"
@@ -2560,6 +3575,9 @@ main() {
           error "Unknown config subcommand: $subcmd\nValid subcommands: init, edit, validate, show"
           ;;
       esac
+      ;;
+    schedule)
+      cmd_schedule "${args[@]}"
       ;;
     version|--version|-v)
       cmd_version

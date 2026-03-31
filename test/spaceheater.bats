@@ -1422,3 +1422,433 @@ EOFMOCK
     [[ $(echo "$output" | jq -r '.error') == "Config file does not exist" ]]
     [[ $(echo "$output" | jq -r '.file_exists') == "false" ]]
 }
+
+# =============================================================================
+# Schedule Command Tests
+# =============================================================================
+
+# Helper to set up schedule test environment
+setup_schedule_env() {
+    create_mock_gh
+    create_mock_git
+    create_mock_launchctl
+    # Point HOME to test temp dir so plists go to mock LaunchAgents
+    export HOME="$TEST_TEMP_DIR"
+    mkdir -p "${TEST_TEMP_DIR}/Library/LaunchAgents"
+}
+
+@test "schedule help shows usage information" {
+    run "$SPACEHEATER" schedule help
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "SPACEHEATER SCHEDULE" ]]
+    [[ "$output" =~ "SUBCOMMANDS" ]]
+    [[ "$output" =~ "PRESETS" ]]
+    [[ "$output" =~ "weekday-morning" ]]
+}
+
+@test "schedule set with --preset weekday-morning generates correct plist" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 2 --preset weekday-morning
+    [ "$status" -eq 0 ]
+
+    # Verify plist was created
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    [ -f "$plist_path" ]
+
+    # Verify plist content
+    [[ $(cat "$plist_path") =~ "com.spaceheater.schedule.testorg-testrepo" ]]
+    [[ $(cat "$plist_path") =~ "<key>SPACEHEATER_REPO</key>" ]]
+    [[ $(cat "$plist_path") =~ "<string>testorg/testrepo</string>" ]]
+    [[ $(cat "$plist_path") =~ "<string>2</string>" ]]
+    [[ $(cat "$plist_path") =~ "<key>Hour</key>" ]]
+    [[ $(cat "$plist_path") =~ "<integer>8</integer>" ]]
+    [[ $(cat "$plist_path") =~ "<key>Weekday</key>" ]]
+}
+
+@test "schedule set with --preset daily generates correct plist" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 1 --preset daily
+    [ "$status" -eq 0 ]
+
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    [ -f "$plist_path" ]
+
+    # Daily should have Hour=9, Minute=0, no Weekday
+    [[ $(cat "$plist_path") =~ "<integer>9</integer>" ]]
+    ! [[ $(cat "$plist_path") =~ "<key>Weekday</key>" ]]
+}
+
+@test "schedule set with custom --hour --minute --weekday generates correct plist" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 1 --hour 7 --minute 30 --weekday 1-5
+    [ "$status" -eq 0 ]
+
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    [ -f "$plist_path" ]
+
+    [[ $(cat "$plist_path") =~ "<integer>7</integer>" ]]
+    [[ $(cat "$plist_path") =~ "<integer>30</integer>" ]]
+    [[ $(cat "$plist_path") =~ "<key>Weekday</key>" ]]
+}
+
+@test "schedule set validates count must be 1-3" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 0 --preset daily
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Count must be between 1 and 3" ]]
+
+    run "$SPACEHEATER" schedule set 4 --preset daily
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Count must be between 1 and 3" ]]
+
+    run "$SPACEHEATER" schedule set abc --preset daily
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Count must be between 1 and 3" ]]
+}
+
+@test "schedule set requires count argument" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set --preset daily
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Missing required argument" ]]
+}
+
+@test "schedule set requires --preset or --hour/--minute" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 2
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Must specify --preset" ]]
+}
+
+@test "schedule set rejects invalid preset name" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 2 --preset invalid-preset
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Unknown preset" ]]
+}
+
+@test "schedule set rejects invalid weekday value" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 1 --hour 8 --weekday 9
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Invalid weekday" ]]
+}
+
+@test "schedule set rejects reversed weekday range" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 1 --hour 8 --weekday 5-1
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Invalid weekday range" ]]
+}
+
+@test "schedule set cannot combine --preset with --hour" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 2 --preset daily --hour 8
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Cannot use --preset with" ]]
+}
+
+@test "schedule set updates existing schedule for same repo" {
+    setup_schedule_env
+
+    # Create initial schedule
+    run "$SPACEHEATER" schedule set 1 --preset daily
+    [ "$status" -eq 0 ]
+
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    [ -f "$plist_path" ]
+
+    # Update with new schedule
+    run "$SPACEHEATER" schedule set 2 --preset weekday-morning
+    [ "$status" -eq 0 ]
+    [ -f "$plist_path" ]
+
+    # Should have new count
+    [[ $(cat "$plist_path") =~ "<string>2</string>" ]]
+    # launchctl bootout should have been called for the removal
+    assert_launchctl_called_with "bootout"
+}
+
+@test "schedule set includes SPACEHEATER_REPO in plist" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 1 --preset daily
+    [ "$status" -eq 0 ]
+
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    [[ $(cat "$plist_path") =~ "<key>SPACEHEATER_REPO</key>" ]]
+    [[ $(cat "$plist_path") =~ "<string>testorg/testrepo</string>" ]]
+}
+
+@test "schedule set includes PATH in plist" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 1 --preset daily
+    [ "$status" -eq 0 ]
+
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    [[ $(cat "$plist_path") =~ "<key>PATH</key>" ]]
+    # PATH should be a snapshot of the user's current PATH
+    local plist_content
+    plist_content=$(cat "$plist_path")
+    # Must contain the mock bin dir (first entry in test PATH)
+    [[ "$plist_content" =~ "$MOCK_BIN_DIR" ]]
+}
+
+@test "schedule set uses absolute path to spaceheater in ProgramArguments" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 1 --preset daily
+    [ "$status" -eq 0 ]
+
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    # Should contain an absolute path (starts with /)
+    [[ $(cat "$plist_path") =~ "<string>/".*/spaceheater"</string>" ]]
+}
+
+@test "schedule set calls launchctl bootstrap" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 1 --preset daily
+    [ "$status" -eq 0 ]
+
+    assert_launchctl_called_with "bootstrap"
+}
+
+@test "schedule list shows entries from plist files" {
+    setup_schedule_env
+
+    # Create a schedule first
+    "$SPACEHEATER" schedule set 2 --preset weekday-morning
+
+    run "$SPACEHEATER" schedule list
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "testorg/testrepo" ]]
+    [[ "$output" =~ "2" ]]
+}
+
+@test "schedule list shows message when no schedules exist" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule list
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "No schedules" ]]
+}
+
+@test "schedule remove deletes plist and calls launchctl bootout" {
+    setup_schedule_env
+
+    # Create a schedule first
+    "$SPACEHEATER" schedule set 1 --preset daily
+
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    [ -f "$plist_path" ]
+
+    run "$SPACEHEATER" schedule remove
+    [ "$status" -eq 0 ]
+    [ ! -f "$plist_path" ]
+    assert_launchctl_called_with "bootout"
+}
+
+@test "schedule remove --all removes all spaceheater plists" {
+    setup_schedule_env
+
+    # Create a schedule
+    "$SPACEHEATER" schedule set 1 --preset daily
+
+    local plist_path="${TEST_TEMP_DIR}/Library/LaunchAgents/com.spaceheater.schedule.testorg-testrepo.plist"
+    [ -f "$plist_path" ]
+
+    run "$SPACEHEATER" schedule remove --all
+    [ "$status" -eq 0 ]
+    [ ! -f "$plist_path" ]
+    [[ "$output" =~ "Removed" ]]
+}
+
+@test "schedule remove warns when no schedule exists" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule remove
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "No schedule found" ]]
+}
+
+@test "schedule set JSON output has correct structure" {
+    setup_schedule_env
+
+    run "$SPACEHEATER" schedule set 2 --preset weekday-morning --json
+    [ "$status" -eq 0 ]
+
+    # Verify valid JSON
+    echo "$output" | jq empty
+
+    [[ $(echo "$output" | jq -r '.action') == "schedule_set" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq -r '.schedule.repository') == "testorg/testrepo" ]]
+    [[ $(echo "$output" | jq '.schedule.desired_count') == "2" ]]
+}
+
+@test "schedule list JSON output has correct structure" {
+    setup_schedule_env
+
+    # Create a schedule first
+    "$SPACEHEATER" schedule set 1 --preset daily
+
+    run "$SPACEHEATER" schedule list --json
+    [ "$status" -eq 0 ]
+
+    echo "$output" | jq empty
+
+    [[ $(echo "$output" | jq -r '.action') == "schedule_list" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq '.count') == "1" ]]
+    [[ $(echo "$output" | jq -r '.schedules[0].repository') == "testorg/testrepo" ]]
+}
+
+@test "schedule remove JSON output has correct structure" {
+    setup_schedule_env
+
+    "$SPACEHEATER" schedule set 1 --preset daily
+
+    run "$SPACEHEATER" schedule remove --json
+    [ "$status" -eq 0 ]
+
+    echo "$output" | jq empty
+
+    [[ $(echo "$output" | jq -r '.action') == "schedule_remove" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+    [[ $(echo "$output" | jq -r '.repository') == "testorg/testrepo" ]]
+}
+
+@test "schedule invalid subcommand returns error" {
+    run "$SPACEHEATER" schedule invalid-subcmd
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Unknown schedule subcommand" ]]
+}
+
+@test "schedule presets resolve to correct values" {
+    setup_schedule_env
+
+    # Test each preset generates a valid plist
+    for preset in weekday-morning weekday-evening weekday-hourly hourly daily twice-daily; do
+        run "$SPACEHEATER" schedule set 1 --preset "$preset"
+        [ "$status" -eq 0 ]
+        # Clean up for next iteration
+        "$SPACEHEATER" schedule remove 2>/dev/null || true
+    done
+}
+
+@test "schedule status shows schedule info" {
+    setup_schedule_env
+
+    "$SPACEHEATER" schedule set 2 --preset weekday-morning
+
+    run "$SPACEHEATER" schedule status
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "testorg/testrepo" ]]
+    [[ "$output" =~ "2" ]]
+}
+
+@test "schedule status JSON parses launchctl exit status" {
+    setup_schedule_env
+
+    "$SPACEHEATER" schedule set 1 --preset daily
+
+    run "$SPACEHEATER" schedule status --json
+    [ "$status" -eq 0 ]
+
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq '.schedules[0].last_exit_status') == "0" ]]
+}
+
+# =============================================================================
+# Schedule Run (Smart Top-up) Tests
+# =============================================================================
+
+@test "schedule run creates deficit codespaces when below target" {
+    # Use the jq-capable mock since schedule run uses complex jq filters
+    create_mock_gh_with_jq
+    create_mock_git
+    create_mock_launchctl
+
+    # Fixture has 1 HOT (Available) + 1 WARM (Shutdown, clean, <3 days) = 2
+    # Requesting 3 should create 1
+    run "$SPACEHEATER" schedule run 3
+    [ "$status" -eq 0 ]
+
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq -r '.action') == "schedule_run" ]]
+    [[ $(echo "$output" | jq -r '.skipped') == "false" ]]
+    [[ $(echo "$output" | jq '.desired_count') == "3" ]]
+    [[ $(echo "$output" | jq '.existing_hot_warm') == "2" ]]
+    [[ $(echo "$output" | jq '.created_count') == "1" ]]
+    # Verify cmd_create output is nested under create_result
+    [[ $(echo "$output" | jq 'has("create_result")') == "true" ]]
+}
+
+@test "schedule run creates nothing when target is met" {
+    create_mock_gh_with_jq
+    create_mock_git
+    create_mock_launchctl
+
+    # Fixture has 2 HOT+WARM codespaces, requesting 2 should skip
+    run "$SPACEHEATER" schedule run 2
+    [ "$status" -eq 0 ]
+
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq -r '.skipped') == "true" ]]
+    [[ $(echo "$output" | jq -r '.message') == "Target already met" ]]
+}
+
+@test "schedule run creates partial when some HOT/WARM exist" {
+    create_mock_gh_with_jq
+    create_mock_git
+    create_mock_launchctl
+
+    # Fixture has 2 HOT+WARM, requesting 3 should try to create 1
+    run "$SPACEHEATER" schedule run 3
+    [ "$status" -eq 0 ]
+
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq '.created_count') == "1" ]]
+    [[ $(echo "$output" | jq '.existing_hot_warm') == "2" ]]
+}
+
+@test "schedule run validates count" {
+    create_mock_gh_with_jq
+    create_mock_git
+
+    run "$SPACEHEATER" schedule run 0
+    [ "$status" -ne 0 ]
+
+    run "$SPACEHEATER" schedule run 4
+    [ "$status" -ne 0 ]
+
+    run "$SPACEHEATER" schedule run
+    [ "$status" -ne 0 ]
+}
+
+@test "schedule run outputs JSON with correct fields" {
+    create_mock_gh_with_jq
+    create_mock_git
+    create_mock_launchctl
+
+    run "$SPACEHEATER" schedule run 2
+    [ "$status" -eq 0 ]
+
+    echo "$output" | jq empty
+    [[ $(echo "$output" | jq -r '.action') == "schedule_run" ]]
+    [[ $(echo "$output" | jq -r '.repository') == "testorg/testrepo" ]]
+    [[ $(echo "$output" | jq '.desired_count') == "2" ]]
+    [[ $(echo "$output" | jq -r '.success') == "true" ]]
+}

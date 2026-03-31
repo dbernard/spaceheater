@@ -359,8 +359,14 @@ if [[ "$1" == "api" && "$3" == "--jq" ]]; then
     API_PATH="$2"
     JQ_FILTER="$4"
 
-    if [[ "$API_PATH" == "/repos/testorg/testrepo" ]]; then
-        cat "${FIXTURES}/codespaces.json" 2>/dev/null | command jq -r "$JQ_FILTER" 2>/dev/null
+    if [[ "$API_PATH" == "/repos/testorg/testrepo" && "$JQ_FILTER" == ".id" ]]; then
+        echo "12345678"
+        exit 0
+    elif [[ "$API_PATH" == "/repos/testorg/testrepo" ]]; then
+        echo '{"id": 12345678, "default_branch": "main", "full_name": "testorg/testrepo"}' | command jq -r "$JQ_FILTER" 2>/dev/null
+        exit 0
+    elif [[ "$API_PATH" == "/repos/testorg/testrepo/codespaces/machines" ]]; then
+        echo '{"machines":[{"name":"basicLinux32gb","display_name":"2 cores, 8 GB RAM","cpus":2}],"total_count":1}' | command jq -r "$JQ_FILTER" 2>/dev/null
         exit 0
     elif [[ "$API_PATH" == /user/codespaces\?repository_id=* ]]; then
         cat "${FIXTURES}/codespaces.json" 2>/dev/null | command jq -r "$JQ_FILTER" 2>/dev/null || echo ""
@@ -385,11 +391,23 @@ case "$*" in
         fi
         exit 0
         ;;
+    "codespace create"*)
+        echo "test-created-$(date +%s)"
+        exit 0
+        ;;
     "codespace view"*)
         echo '{"displayName": "Running Test Codespace"}'
         exit 0
         ;;
     "codespace code"*|"codespace ssh"*)
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo/codespaces/machines --jq"*)
+        echo "basicLinux32gb"
+        exit 0
+        ;;
+    "api /repos/testorg/testrepo/codespaces/machines")
+        echo '{"machines":[{"name":"basicLinux32gb","display_name":"2 cores, 8 GB RAM","cpus":2}],"total_count":1}'
         exit 0
         ;;
     "api /user/codespaces/"*)
@@ -401,7 +419,32 @@ case "$*" in
                 exit 0
             fi
         fi
-        echo '{"name": "'"$CODESPACE_NAME"'", "state": "Available", "web_url": "https://codespaces.github.com/'"$CODESPACE_NAME"'"}'
+        CURRENT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        echo '{
+          "name": "'"$CODESPACE_NAME"'",
+          "display_name": "'"$CODESPACE_NAME"'",
+          "state": "Available",
+          "created_at": "'"$CURRENT_TS"'",
+          "updated_at": "'"$CURRENT_TS"'",
+          "last_used_at": "'"$CURRENT_TS"'",
+          "web_url": "https://codespaces.github.com/'"$CODESPACE_NAME"'",
+          "git_status": {
+            "ahead": 0,
+            "behind": 0,
+            "has_uncommitted_changes": false,
+            "has_unpushed_changes": false,
+            "ref": "main"
+          },
+          "machine": {
+            "display_name": "2 cores, 8 GB RAM"
+          },
+          "repository": {
+            "full_name": "testorg/testrepo"
+          },
+          "owner": {
+            "login": "testuser"
+          }
+        }'
         exit 0
         ;;
     *)
@@ -454,6 +497,84 @@ case "$1" in
 esac
 EOF
     chmod +x "${MOCK_BIN_DIR}/git"
+}
+
+# Create mock launchctl command for schedule tests
+create_mock_launchctl() {
+    # Create a mock LaunchAgents directory
+    mkdir -p "${TEST_TEMP_DIR}/Library/LaunchAgents"
+
+    cat > "${MOCK_BIN_DIR}/launchctl" << 'LAUNCHCTL_EOF'
+#!/usr/bin/env bash
+# Mock launchctl for testing
+
+# Log calls for debugging
+echo "launchctl $*" >> "${TEST_TEMP_DIR}/launchctl-calls.log"
+
+case "$1" in
+    bootstrap)
+        # launchctl bootstrap gui/<uid> <plist_path>
+        # Just succeed - the plist file should already exist
+        exit 0
+        ;;
+    bootout)
+        # launchctl bootout gui/<uid> <plist_path>
+        exit 0
+        ;;
+    load)
+        exit 0
+        ;;
+    unload)
+        exit 0
+        ;;
+    list)
+        if [ -n "${2:-}" ]; then
+            # launchctl list <label> - dict-style output (matches real launchctl)
+            cat <<DICTEOF
+{
+	"LimitLoadToSessionType" = "Aqua";
+	"Label" = "$2";
+	"LastExitStatus" = 0;
+	"TimeOut" = 30;
+};
+DICTEOF
+        else
+            # launchctl list - list all (tab-separated)
+            echo -e "PID\tStatus\tLabel"
+            for plist in "${TEST_TEMP_DIR}/Library/LaunchAgents"/com.spaceheater.schedule.*.plist; do
+                [ -f "$plist" ] || continue
+                local label
+                label=$(basename "$plist" .plist)
+                echo -e "-\t0\t$label"
+            done
+        fi
+        exit 0
+        ;;
+    *)
+        echo "Error: Mock launchctl - unhandled command: $*" >&2
+        exit 1
+        ;;
+esac
+LAUNCHCTL_EOF
+    chmod +x "${MOCK_BIN_DIR}/launchctl"
+}
+
+# Verify launchctl was called with expected arguments
+assert_launchctl_called_with() {
+    local expected="$1"
+    if [[ -f "${TEST_TEMP_DIR}/launchctl-calls.log" ]]; then
+        if grep -q "$expected" "${TEST_TEMP_DIR}/launchctl-calls.log"; then
+            return 0
+        else
+            echo "Expected launchctl to be called with: $expected" >&2
+            echo "Actual calls:" >&2
+            cat "${TEST_TEMP_DIR}/launchctl-calls.log" >&2
+            return 1
+        fi
+    else
+        echo "No launchctl calls recorded" >&2
+        return 1
+    fi
 }
 
 # Verify gh was called with expected arguments

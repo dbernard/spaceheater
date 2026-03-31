@@ -84,6 +84,7 @@ The entire CLI is a single Bash script (`spaceheater`). Code is organized in sec
 | `clean [days]` | Delete codespaces older than N days (default: 7) |
 | `delete` / `rm` | Delete a specific codespace |
 | `config [init\|edit\|validate]` | Manage configuration |
+| `schedule [set\|list\|remove\|status]` | Schedule automatic codespace pre-warming (macOS launchd) |
 
 ### Temperature System
 
