@@ -222,7 +222,7 @@ validate_config_file() {
 # SPACEHEATER CONFIGURATION
 # ============================================================================
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 # Cache for repository ID to avoid repeated API calls
 CACHED_REPO_ID=""
