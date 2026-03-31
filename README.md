@@ -14,6 +14,7 @@ Tired of waiting 5-10 minutes for Codespaces to build? `spaceheater` creates pre
 - 💰 **Cost-efficient** - Stopped codespaces cost nothing (only minimal storage)
 - 🎯 **Smart workflows** - Interactive menus, fuzzy name matching, and auto-selection
 - 🧹 **Easy management** - List, start, stop, and clean up codespaces effortlessly
+- ⏰ **Scheduled pre-warming** - Automatically maintain warm codespaces on a schedule (macOS)
 
 ## Quick Start
 
@@ -109,6 +110,20 @@ spaceheater autostart  # Later, start one instantly
 SPACEHEATER_BRANCH=my-feature spaceheater create 2
 spaceheater autostart
 ```
+
+### Scheduled Pre-warming (macOS)
+
+Let spaceheater keep warm codespaces ready automatically:
+
+```bash
+# Ensure 2 warm codespaces every weekday at 8 AM
+spaceheater schedule set 2 --preset weekday-morning
+
+# Check schedule status
+spaceheater schedule status
+```
+
+Uses macOS launchd — jobs run even if your Mac was asleep at the scheduled time. See [Full Guide](docs/GUIDE.md#scheduled-pre-warming) for all presets and custom schedules.
 
 ### Weekly Cleanup
 
