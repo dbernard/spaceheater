@@ -130,6 +130,10 @@ spaceheater stop [name]       Stop a running codespace
 spaceheater clean [days]      Delete codespaces older than N days (default: 7)
 spaceheater delete|rm <name>  Delete a specific codespace
 spaceheater config            Show current configuration
+spaceheater schedule set      Schedule automatic codespace pre-warming (macOS)
+spaceheater schedule list     List active schedules
+spaceheater schedule remove   Remove a schedule
+spaceheater schedule status   Show schedules and recent run results
 spaceheater version           Show version information
 spaceheater help              Show help message
 ```
@@ -680,6 +684,8 @@ spaceheater autostart  # ~30 seconds, fully built
 SPACEHEATER_CONNECT=ssh spaceheater autostart
 ```
 
+Or skip the manual step entirely with [scheduled pre-warming](#scheduled-pre-warming).
+
 ### Feature Branch Development
 
 ```bash
@@ -715,6 +721,53 @@ export SPACEHEATER_REPO=myorg/repo2
 spaceheater create 2
 ```
 
+### Scheduled Pre-warming
+
+On macOS, spaceheater can automatically maintain warm codespaces using launchd. The schedule is **declarative**: it checks how many HOT/WARM codespaces exist and only creates enough to reach your target — no wasted resources.
+
+Jobs run even if your Mac was asleep at the scheduled time (launchd fires missed runs on wake).
+
+```bash
+# Ensure 2 warm codespaces every weekday at 8 AM
+spaceheater schedule set 2 --preset weekday-morning
+
+# Ensure 1 warm codespace every hour on weekdays
+spaceheater schedule set 1 --preset weekday-hourly
+
+# Custom: 1 codespace at 7:30 AM on weekdays
+spaceheater schedule set 1 --hour 7 --minute 30 --weekday 1-5
+
+# Check what's scheduled
+spaceheater schedule list
+
+# See schedule status and recent run results
+spaceheater schedule status
+
+# Remove schedule for the current repo
+spaceheater schedule remove
+
+# Remove all schedules
+spaceheater schedule remove --all
+```
+
+**Available presets:**
+
+| Preset | Schedule |
+|--------|----------|
+| `weekday-morning` | 8:00 AM, Mon-Fri |
+| `weekday-evening` | 6:00 PM, Mon-Fri |
+| `weekday-hourly` | Every hour, Mon-Fri |
+| `hourly` | Every hour, every day |
+| `daily` | 9:00 AM, every day |
+| `twice-daily` | 8:00 AM & 5:00 PM, every day |
+
+For custom schedules, use `--hour`, `--minute`, and `--weekday` flags directly:
+- `--hour` — 0-23, or comma-separated (e.g., `8,12,17`)
+- `--minute` — 0-59 (default: 0)
+- `--weekday` — 0-6 (0=Sunday), range (e.g., `1-5`), or comma-separated
+
+**Note:** Scheduling is currently macOS-only (uses launchd). Cron support for Linux is planned.
+
 ## 💰 Cost Optimization
 
 - **Stopped codespaces are free** - Only pay for minimal storage
@@ -723,6 +776,7 @@ spaceheater create 2
 - **After auto-stop, they're free** - Until you start them again
 - **Set retention periods** - Use `SPACEHEATER_RETENTION` to avoid accumulation
 - **Regular cleanup** - Use `spaceheater clean` to remove old codespaces
+- **Smart scheduling** - `schedule` only creates when needed, avoiding duplicate codespaces
 
 **Cost comparison:**
 - Traditional: 5-10 min build time every session = $$$ per start

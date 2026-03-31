@@ -121,6 +121,13 @@ mock_git() {
   # Sets up git command to return mock response
 }
 
+# Mock launchctl for schedule tests
+mock_launchctl() {
+  # Handles bootstrap, bootout, load, unload, list
+  # list <label> returns dict-style output (PID, LastExitStatus)
+  # Uses $TEST_TEMP_DIR/Library/LaunchAgents/ for plist files
+}
+
 # Generate test fixtures with relative dates
 generate_test_fixture() {
   # Creates codespaces.json with current timestamps
@@ -150,6 +157,7 @@ teardown() {
 - [ ] `clean` - Test age filtering, dry run, actual deletion
 - [ ] `delete` - Test specific deletion, non-existent space
 - [ ] `config` - Test output format, environment variable reading
+- [ ] `schedule` - Test set/list/remove/status subcommands, preset resolution, launchd plist generation, smart top-up logic (count HOT/WARM, create deficit only)
 - [ ] `version` - Test version output format
 - [ ] `help` - Test help text completeness
 
