@@ -157,7 +157,7 @@ validate_config_file() {
   echo
 
   # Valid config keys (without SPACEHEATER_ prefix)
-  local valid_keys="REPO BRANCH MACHINE RETENTION IDLE_TIMEOUT DEVCONTAINER_PATH DISPLAY_NAME LOCATION CONNECT DEBUG UI_STYLE"
+  local valid_keys="REPO BRANCH MACHINE RETENTION IDLE_TIMEOUT DEVCONTAINER_PATH DISPLAY_NAME LOCATION CONNECT DEBUG UI_STYLE WARM_DAYS"
 
   while IFS='=' read -r key value; do
     line_num=$((line_num + 1))
@@ -483,6 +483,9 @@ init_config_vars() {
   # Debug mode
   DEBUG="${SPACEHEATER_DEBUG:-false}"
 
+  # Warm threshold in days (default: 3)
+  WARM_DAYS="${SPACEHEATER_WARM_DAYS:-3}"
+
   # Schedule log directory
   SPACEHEATER_SCHEDULE_LOG_DIR="${SPACEHEATER_SCHEDULE_LOG_DIR:-}"
 }
@@ -590,10 +593,10 @@ parse_devcontainer_requirements() {
 # Returns JQ filter expression for calculating temperature from codespace state
 # This centralizes the temperature logic for reuse across commands
 get_temperature_jq_filter() {
-  cat <<'EOF'
+  cat <<EOF
 (
   if .state == "Available" then "hot"
-  elif .state == "Shutdown" and $is_git_clean and $activity_age_days <= 3 then "warm"
+  elif .state == "Shutdown" and \$is_git_clean and \$activity_age_days <= ${WARM_DAYS} then "warm"
   elif .state | test("Starting|Provisioning|ShuttingDown|Stopping") then "transitioning"
   else "cold"
   end
@@ -1264,9 +1267,9 @@ cmd_list() {
         category="HOT"
         ;;
       Shutdown)
-        # WARM = shutdown + clean git + recent (≤3 days)
+        # WARM = shutdown + clean git + recent (≤WARM_DAYS)
         # COLD = shutdown + (dirty git OR old)
-        if [ "$is_git_clean" = "true" ] && [ "$age_days" -le 3 ]; then
+        if [ "$is_git_clean" = "true" ] && [ "$age_days" -le "$WARM_DAYS" ]; then
           category="WARM"
         else
           category="COLD"
@@ -2152,6 +2155,8 @@ cmd_config() {
       --arg location_source "$(get_config_source LOCATION)" \
       --arg display_name_value "${DISPLAY_NAME:-}" \
       --arg display_name_source "$(get_config_source DISPLAY_NAME)" \
+      --arg warm_days_value "${WARM_DAYS}" \
+      --arg warm_days_source "$(get_config_source WARM_DAYS)" \
       --arg ui_style_value "${SPACEHEATER_UI_STYLE:-unicode}" \
       --arg ui_style_source "$(get_config_source UI_STYLE)" \
       --arg debug_value "${DEBUG:-false}" \
@@ -2207,6 +2212,13 @@ cmd_config() {
           display_name: {
             value: (if $display_name_value != "" then $display_name_value else null end),
             source: $display_name_source
+          }
+        },
+        temperature: {
+          warm_days: {
+            value: ($warm_days_value | tonumber),
+            source: $warm_days_source,
+            default: 3
           }
         },
         ui: {
@@ -2266,6 +2278,10 @@ cmd_config() {
     echo -e "  ${ICON_REPO} SPACEHEATER_DEVCONTAINER_PATH: ${CYAN}${DEVCONTAINER_PATH:-<auto-detect>}${NC}"
     echo -e "  ${ICON_REGION} SPACEHEATER_LOCATION:          ${CYAN}${LOCATION:-<auto-detect closest region>}${NC}"
     echo -e "  ${ICON_CALENDAR} SPACEHEATER_DISPLAY_NAME:      ${CYAN}${DISPLAY_NAME:-<GitHub-generated>}${NC}"
+    echo ""
+
+    echo -e "${BOLD}Temperature Settings:${NC}"
+    echo -e "  ${ICON_THERMOMETER} SPACEHEATER_WARM_DAYS:         ${CYAN}${WARM_DAYS}${NC} ${DIM}(days before WARM becomes COLD, default: 3)${NC}"
     echo ""
 
     echo -e "${BOLD}UI Settings:${NC}"
@@ -3452,7 +3468,7 @@ cmd_help() {
   echo ""
   echo -e "  Codespaces are categorized by their readiness:"
   echo -e "  ${RED}🔥 HOT${NC}  - Running codespaces (immediately available)"
-  echo -e "  ${YELLOW}♨️  WARM${NC} - Shutdown but clean & recent (≤3 days) - quick to restart"
+  echo -e "  ${YELLOW}♨️  WARM${NC} - Shutdown but clean & recent (≤${WARM_DAYS} days) - quick to restart"
   echo -e "  ${YELLOW}⏳ TRANSITIONING${NC} - Starting up or shutting down"
   echo -e "  ${BLUE}🧊 COLD${NC} - Old or dirty codespaces - need maintenance first"
   echo ""
