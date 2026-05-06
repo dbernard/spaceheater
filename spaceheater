@@ -483,8 +483,11 @@ init_config_vars() {
   # Debug mode
   DEBUG="${SPACEHEATER_DEBUG:-false}"
 
-  # Warm threshold in days (default: 3)
-  WARM_DAYS="${SPACEHEATER_WARM_DAYS:-3}"
+  # Warm threshold in days
+  WARM_DAYS="${SPACEHEATER_WARM_DAYS:-$WARM_DAYS_DEFAULT}"
+  if [[ ! "$WARM_DAYS" =~ ^[0-9]+$ ]]; then
+    error "Invalid SPACEHEATER_WARM_DAYS value: '$WARM_DAYS'\n\nMust be a non-negative integer (number of days). Got: $WARM_DAYS"
+  fi
 
   # Schedule log directory
   SPACEHEATER_SCHEDULE_LOG_DIR="${SPACEHEATER_SCHEDULE_LOG_DIR:-}"
@@ -501,6 +504,8 @@ DISPLAY_NAME=""
 LOCATION=""
 CONNECT_METHOD=""
 DEBUG="false"
+WARM_DAYS_DEFAULT=3
+WARM_DAYS=""
 
 # Track loaded config files for display
 LOADED_CONFIG_FILES=""
@@ -2157,6 +2162,7 @@ cmd_config() {
       --arg display_name_source "$(get_config_source DISPLAY_NAME)" \
       --arg warm_days_value "${WARM_DAYS}" \
       --arg warm_days_source "$(get_config_source WARM_DAYS)" \
+      --arg warm_days_default "${WARM_DAYS_DEFAULT}" \
       --arg ui_style_value "${SPACEHEATER_UI_STYLE:-unicode}" \
       --arg ui_style_source "$(get_config_source UI_STYLE)" \
       --arg debug_value "${DEBUG:-false}" \
@@ -2218,7 +2224,7 @@ cmd_config() {
           warm_days: {
             value: ($warm_days_value | tonumber),
             source: $warm_days_source,
-            default: 3
+            default: ($warm_days_default | tonumber)
           }
         },
         ui: {
@@ -2281,7 +2287,7 @@ cmd_config() {
     echo ""
 
     echo -e "${BOLD}Temperature Settings:${NC}"
-    echo -e "  ${ICON_THERMOMETER} SPACEHEATER_WARM_DAYS:         ${CYAN}${WARM_DAYS}${NC} ${DIM}(days before WARM becomes COLD, default: 3)${NC}"
+    echo -e "  ${ICON_THERMOMETER} SPACEHEATER_WARM_DAYS:         ${CYAN}${WARM_DAYS}${NC} ${DIM}(days before WARM becomes COLD, default: ${WARM_DAYS_DEFAULT})${NC}"
     echo ""
 
     echo -e "${BOLD}UI Settings:${NC}"
@@ -3527,7 +3533,7 @@ main() {
 
   # Track which SPACEHEATER_* variables were set in the environment
   # before loading config files (these take highest precedence)
-  for var in REPO BRANCH MACHINE RETENTION IDLE_TIMEOUT DEVCONTAINER_PATH DISPLAY_NAME LOCATION CONNECT DEBUG UI_STYLE SCHEDULE_LOG_DIR; do
+  for var in REPO BRANCH MACHINE RETENTION IDLE_TIMEOUT DEVCONTAINER_PATH DISPLAY_NAME LOCATION CONNECT DEBUG UI_STYLE WARM_DAYS SCHEDULE_LOG_DIR; do
     local env_var="SPACEHEATER_${var}"
     if [ -n "${!env_var:-}" ]; then
       ENV_VARS_SET="$ENV_VARS_SET $env_var"

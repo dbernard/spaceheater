@@ -621,6 +621,56 @@ EOF
     [[ $(echo "$output" | jq -r '.temperature.warm_days.value') == "10" ]]
 }
 
+@test "SPACEHEATER_WARM_DAYS env var overrides config file" {
+    create_mock_gh
+    create_mock_jq
+
+    # Config file sets WARM_DAYS=5
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    echo "WARM_DAYS=5" > "$user_config"
+
+    # Env var sets SPACEHEATER_WARM_DAYS=7 (should win)
+    export HOME="$TEST_TEMP_DIR"
+    export SPACEHEATER_WARM_DAYS=7
+    run "$SPACEHEATER" config --json
+    [ "$status" -eq 0 ]
+
+    [[ $(echo "$output" | jq -r '.temperature.warm_days.value') == "7" ]]
+}
+
+@test "SPACEHEATER_WARM_DAYS rejects non-numeric values" {
+    create_mock_gh
+    create_mock_jq
+
+    export SPACEHEATER_WARM_DAYS="abc"
+    run "$SPACEHEATER" list
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Invalid SPACEHEATER_WARM_DAYS" ]]
+}
+
+@test "SPACEHEATER_WARM_DAYS rejects negative values" {
+    create_mock_gh
+    create_mock_jq
+
+    export SPACEHEATER_WARM_DAYS="-1"
+    run "$SPACEHEATER" list
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Invalid SPACEHEATER_WARM_DAYS" ]]
+}
+
+@test "config validate accepts WARM_DAYS key" {
+    create_mock_gh
+    create_mock_jq
+
+    local config_file="${TEST_TEMP_DIR}/test.conf"
+    echo "WARM_DAYS=10" > "$config_file"
+
+    run "$SPACEHEATER" config validate "$config_file"
+    [ "$status" -eq 0 ]
+    [[ ! "$output" =~ "Unknown configuration key" ]]
+}
+
 @test "JSON output handles empty codespace list" {
     # Mock gh to return empty codespace list
     create_mock_gh
