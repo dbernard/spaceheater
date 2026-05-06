@@ -545,6 +545,132 @@ EOF
     [[ $(echo "$output" | jq -r '.codespaces[0].state') == "Available" ]]
 }
 
+@test "SPACEHEATER_WARM_DAYS configures warm threshold" {
+    create_mock_gh
+    # Create a codespace that is shutdown, clean, and 5 days inactive
+    cat > "${FIXTURES}/codespaces.json" << 'EOF'
+{
+  "codespaces": [{
+    "name": "borderline-space",
+    "display_name": "Borderline Codespace",
+    "state": "Shutdown",
+    "created_at": "2026-04-28T10:00:00Z",
+    "updated_at": "2026-04-30T10:00:00Z",
+    "last_used_at": "2026-04-30T10:00:00Z",
+    "git_status": {
+      "has_uncommitted_changes": false,
+      "has_unpushed_changes": false,
+      "ahead": 0,
+      "behind": 0,
+      "ref": "main"
+    },
+    "machine": {
+      "display_name": "2 cores, 8 GB RAM"
+    },
+    "repository": {
+      "full_name": "testorg/testrepo"
+    },
+    "owner": {
+      "login": "testuser"
+    }
+  }],
+  "total_count": 1
+}
+EOF
+
+    # With default WARM_DAYS=3, a 5-day-old codespace should be COLD
+    unset SPACEHEATER_WARM_DAYS
+    run "$SPACEHEATER" list --json
+    [ "$status" -eq 0 ]
+    [[ $(echo "$output" | jq -r '.codespaces[0].temperature') == "cold" ]]
+
+    # With WARM_DAYS=7, the same codespace should be WARM
+    export SPACEHEATER_WARM_DAYS=7
+    run "$SPACEHEATER" list --json
+    [ "$status" -eq 0 ]
+    [[ $(echo "$output" | jq -r '.codespaces[0].temperature') == "warm" ]]
+}
+
+@test "config command JSON includes warm_days setting" {
+    create_mock_gh
+    create_mock_git
+    create_mock_jq
+
+    export SPACEHEATER_WARM_DAYS=5
+    run "$SPACEHEATER" config --json
+    [ "$status" -eq 0 ]
+
+    [[ $(echo "$output" | jq -r '.temperature.warm_days.value') == "5" ]]
+    [[ $(echo "$output" | jq -r '.temperature.warm_days.default') == "3" ]]
+}
+
+@test "WARM_DAYS can be set in config file" {
+    create_mock_gh
+    create_mock_jq
+
+    # Create a config file with WARM_DAYS setting
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    echo "WARM_DAYS=10" > "$user_config"
+
+    export HOME="$TEST_TEMP_DIR"
+    unset SPACEHEATER_WARM_DAYS
+    run "$SPACEHEATER" config --json
+    [ "$status" -eq 0 ]
+
+    [[ $(echo "$output" | jq -r '.temperature.warm_days.value') == "10" ]]
+}
+
+@test "SPACEHEATER_WARM_DAYS env var overrides config file" {
+    create_mock_gh
+    create_mock_jq
+
+    # Config file sets WARM_DAYS=5
+    local user_config="${TEST_TEMP_DIR}/.config/spaceheater/config"
+    mkdir -p "$(dirname "$user_config")"
+    echo "WARM_DAYS=5" > "$user_config"
+
+    # Env var sets SPACEHEATER_WARM_DAYS=7 (should win)
+    export HOME="$TEST_TEMP_DIR"
+    export SPACEHEATER_WARM_DAYS=7
+    run "$SPACEHEATER" config --json
+    [ "$status" -eq 0 ]
+
+    [[ $(echo "$output" | jq -r '.temperature.warm_days.value') == "7" ]]
+}
+
+@test "SPACEHEATER_WARM_DAYS rejects non-numeric values" {
+    create_mock_gh
+    create_mock_jq
+
+    export SPACEHEATER_WARM_DAYS="abc"
+    run "$SPACEHEATER" list
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Invalid SPACEHEATER_WARM_DAYS" ]]
+}
+
+@test "SPACEHEATER_WARM_DAYS rejects negative values" {
+    create_mock_gh
+    create_mock_jq
+
+    export SPACEHEATER_WARM_DAYS="-1"
+    run "$SPACEHEATER" list
+    [ "$status" -ne 0 ]
+    [[ "$output" =~ "Invalid SPACEHEATER_WARM_DAYS" ]]
+}
+
+@test "config validate accepts WARM_DAYS key" {
+    create_mock_gh
+    create_mock_jq
+
+    local config_file="${TEST_TEMP_DIR}/test.conf"
+    echo "WARM_DAYS=10" > "$config_file"
+
+    run "$SPACEHEATER" config validate "$config_file"
+    [ "$status" -eq 0 ]
+    [[ ! "$output" =~ "Unknown configuration key" ]]
+}
+
 @test "JSON output handles empty codespace list" {
     # Mock gh to return empty codespace list
     create_mock_gh
