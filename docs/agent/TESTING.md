@@ -25,11 +25,39 @@ make lint
 # 2. Run test suite (comprehensive)
 make test
 
-# 3. Manual smoke test
+# 3. If anything failed, iterate on just the failures
+make test-failed
+
+# 4. Manual smoke test
 ./spaceheater help
 ./spaceheater version
 ./spaceheater config
 ```
+
+### Reading Test Output
+
+`make test` is wrapped by `test/run-tests.sh`. The wrapper:
+
+- Streams bats output live to the terminal.
+- Tees the complete output to `.test-output.log` at the repo root (gitignored).
+- On failure, prints a `=== FAILURES ===` block at the end of the output,
+  containing every `not ok` line and its `#`-prefixed debug context.
+
+**The trailing failure block means a single `make test` run is enough to see
+which tests failed and why** — even if your terminal scrollback or a `tail
+-N` clips the middle of the suite output, the summary at the bottom is
+authoritative. Do not rerun the suite to locate failures; grep
+`.test-output.log` or scroll to the bottom of the previous run instead.
+
+Bats persists a per-run status log under `test/.bats/run-logs/` (gitignored).
+`make test-failed` uses that log via `bats --filter-status failed` to rerun
+only the tests that failed in the most recent run — useful for tight
+iteration when fixing a specific failure.
+
+> **Note:** `make test-failed` skips `make lint` (which `make test` runs
+> first) so iteration stays fast. Once your fix is green, run a full
+> `make test` before committing so lint and the rest of the suite are
+> re-validated.
 
 ### Before Committing
 ```bash
@@ -280,9 +308,21 @@ SPACEHEATER_DEBUG=1 ./spaceheater list
 
 ## Debugging Failed Tests
 
-### Run Single Test
+### Locate failures from the previous run
 ```bash
-# Run specific test by name
+# Inspect the trailing failure summary or grep the persisted log
+tail -40 .test-output.log
+grep -E '^(not ok |#)' .test-output.log
+```
+
+### Rerun only the failures
+```bash
+# Uses bats' --filter-status failed against test/.bats/run-logs/
+make test-failed
+```
+
+### Run a single test by name
+```bash
 bats test/spaceheater.bats --filter "test name pattern"
 ```
 

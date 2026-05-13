@@ -548,15 +548,19 @@ EOF
 @test "SPACEHEATER_WARM_DAYS configures warm threshold" {
     create_mock_gh
     # Create a codespace that is shutdown, clean, and 5 days inactive
-    cat > "${FIXTURES}/codespaces.json" << 'EOF'
+    local five_days_ago
+    five_days_ago=$(date -u -d "5 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-5d +%Y-%m-%dT%H:%M:%SZ)
+    local seven_days_ago
+    seven_days_ago=$(date -u -d "7 days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-7d +%Y-%m-%dT%H:%M:%SZ)
+    cat > "${FIXTURES}/codespaces.json" << EOF
 {
   "codespaces": [{
     "name": "borderline-space",
     "display_name": "Borderline Codespace",
     "state": "Shutdown",
-    "created_at": "2026-04-28T10:00:00Z",
-    "updated_at": "2026-04-30T10:00:00Z",
-    "last_used_at": "2026-04-30T10:00:00Z",
+    "created_at": "${seven_days_ago}",
+    "updated_at": "${five_days_ago}",
+    "last_used_at": "${five_days_ago}",
     "git_status": {
       "has_uncommitted_changes": false,
       "has_unpushed_changes": false,
