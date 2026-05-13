@@ -126,8 +126,11 @@ See `.spaceheater.conf.example` for all available options.
 Tests use **Bats** with mocked external commands. The test helper (`test/test_helper.bash`) provides mock functions for `gh`, `git`, and `jq` so tests run without network access or real codespaces.
 
 ```bash
-# Run full suite
+# Run full suite (writes .test-output.log, prints failure summary on failure)
 make test
+
+# Rerun only tests that failed in the previous run
+make test-failed
 
 # Run specific test
 bats test/spaceheater.bats --filter "test name pattern"
@@ -136,6 +139,17 @@ bats test/spaceheater.bats --filter "test name pattern"
 SPACEHEATER_DEBUG=1 make test
 bash -x ./spaceheater <command>
 ```
+
+**Reading test failures efficiently:** On failure, `make test` prints a
+`=== FAILURES ===` block at the end of its output containing every `not ok`
+line and its `#`-prefixed debug context. **Do not rerun the full suite to
+locate failures** — `tail -N` of the original output already shows them, and
+the complete log is persisted to `.test-output.log` for grep. Use
+`make test-failed` to iterate on a fix without paying for the whole suite.
+
+`make test-failed` deliberately skips `make lint` for speed. Once your fix
+is green via `make test-failed`, run a full `make test` before committing
+so lint and unmodified tests are re-validated.
 
 ### Commits
 

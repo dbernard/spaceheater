@@ -1,4 +1,4 @@
-.PHONY: help install uninstall test lint check clean
+.PHONY: help install uninstall test test-failed lint check clean
 
 # ShellCheck minimum severity: error, warning (default), info, style
 SHELLCHECK_SEVERITY ?= warning
@@ -9,7 +9,8 @@ help:
 	@echo ""
 	@echo "  make install     Install spaceheater to your system"
 	@echo "  make uninstall   Uninstall spaceheater from your system"
-	@echo "  make test        Run test suite"
+	@echo "  make test        Run test suite (writes .test-output.log)"
+	@echo "  make test-failed Rerun only tests that failed last run"
 	@echo "  make lint        Check shell script syntax and run ShellCheck"
 	@echo "  make check       Check prerequisites"
 	@echo "  make clean       Clean test artifacts"
@@ -25,11 +26,13 @@ uninstall:
 	@echo "Running uninstaller..."
 	@bash uninstall.sh
 
-# Run test suite
+# Run test suite. On failure, the wrapper prints a trailing
+# "=== FAILURES ===" block so `tail -N` of the output is enough to
+# see what failed without rerunning the suite.
 test: lint
 	@if command -v bats >/dev/null 2>&1; then \
 		echo "Running Bats test suite..."; \
-		bats test/*.bats; \
+		bash test/run-tests.sh; \
 	else \
 		echo "⚠️  Bats test framework not found"; \
 		echo "   Install from: https://github.com/bats-core/bats-core"; \
@@ -42,6 +45,18 @@ test: lint
 		bash -c './spaceheater help > /dev/null' && \
 		echo "✓ Basic smoke tests passed"; \
 	fi
+
+# Rerun only the tests that failed in the previous `make test` run.
+# Relies on bats' run-log under test/.bats/run-logs/.
+test-failed:
+	@if ! command -v bats >/dev/null 2>&1; then \
+		echo "✗ bats not installed"; exit 1; \
+	fi
+	@if [ -z "$$(ls -A test/.bats/run-logs/ 2>/dev/null)" ]; then \
+		echo "No previous test run found. Run 'make test' first."; \
+		exit 1; \
+	fi
+	@bash test/run-tests.sh --filter-status failed
 
 # Lint shell scripts
 lint:
@@ -82,4 +97,6 @@ clean:
 	@rm -rf spaceheater-test-*
 	@rm -f test/*.log
 	@rm -rf test/tmp
+	@rm -rf test/.bats
+	@rm -f .test-output.log
 	@echo "✓ Test artifacts cleaned"
