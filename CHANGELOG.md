@@ -5,6 +5,26 @@ All notable changes to spaceheater will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-05-13
+
+### Added
+- Configurable WARM threshold via `SPACEHEATER_WARM_DAYS` env var or
+  `WARM_DAYS` config key (default: 3). Controls how many days a clean
+  shutdown codespace stays WARM before transitioning to COLD. Surfaced
+  in `config show` and `config --json` with source tracking, validated
+  as a non-negative integer. (#38)
+- `make test-failed` reruns only previously-failed bats tests via
+  `--filter-status failed`, skipping lint for fast iteration. (#39)
+- `make test` now writes the full test log to `.test-output.log`
+  (gitignored) and prints a trailing `=== FAILURES ===` block on
+  failure so a single `tail` of the output is enough to see what
+  failed and why — no need to rerun the suite. (#39)
+
+### Documentation
+- Added `schedule` command coverage to README and `docs/GUIDE.md`
+  (presets, custom flags, cost-optimization tips) and to
+  `docs/agent/TESTING.md` (`mock_launchctl`). (#36)
+
 ## [1.2.0] - 2026-03-31
 
 ### Added
@@ -74,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automated installer and uninstaller scripts
 - Full documentation in docs/GUIDE.md
 
+[1.3.0]: https://github.com/dbernard/spaceheater/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/dbernard/spaceheater/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dbernard/spaceheater/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dbernard/spaceheater/releases/tag/v1.0.0
